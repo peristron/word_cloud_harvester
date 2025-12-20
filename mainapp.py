@@ -760,14 +760,61 @@ st.set_page_config(page_title="Word Cloud & Graph Analytics", layout="wide")
 st.title("🧠 Multi-File Word Cloud & Graph Analyzer")
 
 
-with st.expander("📘 App Guide (Architecture & Features)", expanded=False):
+with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=False):
     st.markdown("""
-    **The Unstructured Data Intel Engine**  
-    This app uses a **Hybrid Sketch Architecture**.
+    ### 🌟 What is this?
+    This is an **Unstructured Data Intelligence Engine**. It is designed to take "dirty," raw text (from logs, surveys, transcripts, or documents) and extract mathematical structure, semantic meaning, and qualitative insights.
+
+    ---
+
+    ### 🛠️ Choose Your Workflow
+
+    #### 1. The "Quick Analysis" Workflow (Small/Medium Files)
+    *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs < 200MB.
+    *   **How:** Upload files in the sidebar. 
+    *   **Result:** The app processes them immediately. You get a "Quick View" Word Cloud for each file as it loads, followed by a master analysis of all files combined.
+
+    #### 2. The "Deep Scan" Workflow (Large Datasets)
+    *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
+    *   **How:** Upload the file. Click **"Start Scan"**. 
+    *   **Result:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts the statistics (counts, connections, topics) into a lightweight "Sketch," and immediately discards the raw text to save memory.
+    *   **Benefit:** You can process datasets larger than your available RAM.
+
+    #### 3. The "Enterprise" Workflow (Offline Harvesting)
+    *   **Best for:** Massive corporate datasets (10M+ rows) or sensitive data that cannot leave your secure server.
+    *   **How:** 
+        1. Download the **Harvester Script** (found in the "Enterprise Workflow" expander below).
+        2. Run it locally on your secure server against your data.
+        3. It generates a `.json` "Sketch File" (pure statistics, no raw text).
+        4. Upload that `.json` file here to visualize the results instantly.
+
+    ---
+
+    ### 🧠 The Analytical Engines
+
+    #### 🕸️ Network Graph & Community Detection
+    *   **Concept:** Maps how words connect (e.g., if "Battery" appears often near "Drain," they are linked).
+    *   **Communities:** Colors represent clusters of topics. If distinct clusters appear, you have successfully separated different conversations (e.g., "Login Issues" vs. "Billing Issues").
+
+    #### 🔍 Bayesian Theme Discovery (Topic Modeling)
+    *   **LDA (Latent Dirichlet Allocation):** Best for essays/assignments. Assumes text is a "smoothie" of mixed topics (e.g., 40% History, 60% Politics).
+    *   **NMF (Non-negative Matrix Factorization):** Best for chat logs/tickets. Assumes text fits into sharp, distinct categories (e.g., "Password Reset").
     
-    *   **Small Files:** You can see visualizations for each file individually before they are merged.
-    *   **Large Data:** Files are read in chunks, stats are extracted into a 'Sketch', and raw text is discarded (Ephemeral Processing).
-    *   **Data Refinery:** Use the utility below to clean and split massive files into manageable CSVs.
+    #### ⚖️ Bayesian Sentiment Inference
+    *   **The Math:** Instead of saying "60% Positive," we use a **Beta-Binomial** model. 
+    *   **The Value:** It calculates a **Credible Interval** (e.g., "We are 95% confident the true positive rate is between 55% and 65%"). This protects you from making bad decisions based on small sample sizes.
+
+    #### 🤖 Generative AI Analyst
+    *   **The Magic:** Once the math is done, the app sends the *summary statistics* (not your raw files) to an LLM (like GPT-4 or Grok).
+    *   **The Output:** The AI acts as a qualitative researcher, writing a narrative report on the themes, anomalies, and root causes it sees in the data.
+
+    ---
+
+    ### ⚡ Utility: The Data Refinery
+    *   Located at the bottom of the page.
+    *   **Purpose:** If you have a messy 500MB log file that Excel can't open, upload it there. 
+    *   **Action:** The app cleans the text (removes HTML, timestamps, PII risks) and **splits** it into manageable 50k-row CSV chunks.
+    *   **Output:** A ZIP file of clean, Excel-ready data.
     """)
 
 st.warning("""
