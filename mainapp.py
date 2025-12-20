@@ -805,7 +805,7 @@ with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=
     *   **The Value:** It calculates a **Credible Interval** (e.g., "We are 95% confident the true positive rate is between 55% and 65%"). This protects you from making bad decisions based on small sample sizes.
 
     #### 🤖 Generative AI Analyst
-    *   **The...art:** Once the math's done, the app sends the *summary statistics* (not your raw files) to an LLM (like GPT-4 or Grok).
+    *   **The...art:** Once the math's done, the app sends the *summary statistics* (**not** your raw files) to an LLM (like GPT-4 or Grok).
     *   **The Output:** The AI acts as a qualitative researcher, writing a narrative report on the themes, anomalies, and root causes it sees in the data.
 
     ---
