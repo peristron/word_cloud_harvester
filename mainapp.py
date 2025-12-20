@@ -801,12 +801,12 @@ with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=
     *   **NMF (Non-negative Matrix Factorization):** Best for chat logs/tickets. Assumes text fits into sharp, distinct categories (e.g., "Password Reset").
     
     #### ⚖️ Bayesian Sentiment Inference
-    *   **The Math:** Instead of saying "60% Positive," we use a **Beta-Binomial** model. 
-    *   **The Value:** It calculates a **Credible Interval** (e.g., "We are 95% confident the true positive rate is between 55% and 65%"). This protects you from making bad decisions based on small sample sizes.
+    *   **The Math:** Instead of saying "60% Positive," the app uses a **Beta-Binomial** model. 
+    *   **The Value:** It calculates a **Credible Interval** (e.g., "...95% confident the true positive rate is between 55% and 65%"). This protects you from making bad decisions based on small sample sizes.
 
     #### 🤖 Generative AI Analyst
     *   **The...art:** Once the math's done, the app sends the *summary statistics* (**not** your raw files) to an LLM (like GPT-4 or Grok).
-    *   **The Output:** The AI acts as a qualitative researcher, writing a narrative report on the themes, anomalies, and root causes it sees in the data.
+    *   **The Output:** The AI acts as a qualitative researcher, writing a narrative report on the themes, anomalies, and root causes it can 'see' in the data.
 
     ---
 
