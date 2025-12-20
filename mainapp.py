@@ -1,6 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Updated: Adaptive Granularity for Small vs. Large Data
+#  Fixed: Select Slider Default Value Error
 #
 import io
 import os
@@ -106,8 +106,6 @@ class StreamScanner:
         self.doc_accum_size = 0
         
         # Configuration: How many rows = 1 Document?
-        # Small Files -> 1 (High resolution)
-        # Huge Files -> 100+ (Low memory usage)
         self.DOC_BATCH_SIZE = doc_batch_size
 
     def set_batch_size(self, size: int):
@@ -122,11 +120,10 @@ class StreamScanner:
         # 2. Topic Modeling Aggregation
         # If DOC_BATCH_SIZE is 1, we save every row as a doc (Ideal for small files)
         if self.DOC_BATCH_SIZE <= 1:
-            # In this case, we actually need the chunk logic to pass us individual rows
-            # But since we receive aggregated chunk_counts, this is an approximation.
-            # Ideally, for Granularity=1, the process_chunk_iter should append list of counters.
-            # For now, we accept the chunk_counts as "A Document" if the chunk was small.
-            self.topic_docs.append(chunk_counts)
+            # For Granularity=1, we treat the chunk summary as a document approximation
+            # Ideally we'd pass list of counters, but this is a trade-off for the streaming arch.
+            if chunk_counts:
+                self.topic_docs.append(chunk_counts)
         else:
             # Accumulate rows until we hit the batch size
             self.current_doc_accum.update(chunk_counts)
@@ -553,16 +550,10 @@ def process_chunk_iter(
         temp_file_stats.update(local_counts)
 
     # Ingest AGGREGATED stats for Global Counts/Bigrams
-    # But if is_line_by_line is True, we already ingested topic docs above.
-    # We pass empty topic doc logic by sending batch size 0 or similar trick, 
-    # but StreamScanner handles double-updates safely because global counts are separate from topic docs.
-    # We just need to make sure we don't double-count rows in total.
-    
     if not is_line_by_line:
         scanner.ingest_chunk_stats(local_counts, local_bigrams, row_count)
     else:
         # We still need to update global counts, but SKIP adding to topic_docs again
-        # We can do this by updating globals directly
         scanner.global_counts.update(local_counts)
         scanner.global_bigrams.update(local_bigrams)
         scanner.total_rows_processed += row_count
@@ -1021,11 +1012,11 @@ with st.sidebar:
         topic_model_type = st.selectbox("Model Type", ["LDA (Probabilistic)", "NMF (Distinct)"], index=0, help="LDA is better for long text/essays. NMF is better for short logs/chats.")
         n_topics_val = st.slider("Number of Topics", 2, 10, 4, help="How many hidden themes to search for.")
         
-        # NEW: Granularity Control
+        # NEW: Granularity Control (FIXED OPTIONS)
         st.markdown("**Processing Granularity**")
         doc_granularity = st.select_slider(
             "Rows per Document",
-            options=[1, 10, 100, 500],
+            options=[1, 5, 10, 100, 500],
             value=5,
             help="1 = Every line is a document (Best for small files). 500 = Groups rows (Best for massive files)."
         )
