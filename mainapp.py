@@ -1344,8 +1344,32 @@ if combined_counts:
     # Extract model type from sidebar selection string
     selected_model_type = "LDA" if "LDA" in topic_model_type else "NMF"
     
-    with st.expander(f"🤔 How this works ({selected_model_type})", expanded=False):
-        st.markdown(f"Using **{len(scanner.topic_docs)} synthetic documents** created during the scan.")
+    # --- IMPROVED EXPLANATION & TROUBLESHOOTING BLOCK ---
+    with st.expander(f"🤔 How this works ({selected_model_type}) & Troubleshooting", expanded=False):
+        n_docs = len(scanner.topic_docs)
+        st.markdown(f"**Analysis Basis:** The model is learning from **{n_docs} synthetic documents** generated during the scan.")
+        
+        # Dynamic Warning for Low Resolution
+        if n_docs < 10:
+            st.warning(
+                "⚠️ **Low Resolution Warning:** You have very few documents (data points) for the model to compare. "
+                "Topic modeling works by finding contrasts *between* documents. If you only have 1 or 2, it often produces generic or repetitive topics.\n\n"
+                "**Fix:** Go to the Sidebar ➔ Performance Options ➔ Set **'Rows per Document'** to **1** and re-scan."
+            )
+
+        if selected_model_type == "LDA":
+            st.markdown("""
+            **Latent Dirichlet Allocation (LDA)** creates a probabilistic model.
+            *   **Logic:** It assumes every document is a "smoothie" of different ingredients (topics). It reads the documents to reverse-engineer the recipes.
+            *   **Best For:** Long text, essays, assignments, and complex mixtures.
+            """)
+        else:
+            st.markdown("""
+            **Non-negative Matrix Factorization (NMF)** uses linear algebra.
+            *   **Logic:** It forces text into distinct, sharp buckets. It assumes a document belongs to Category A *or* Category B, rarely both.
+            *   **Best For:** Short chats, support tickets, and distinct feedback.
+            """)
+    # ----------------------------------------------------
     
     if len(scanner.topic_docs) > 0 and DictVectorizer:
         with st.spinner(f"Running {selected_model_type} Topic Modeling on Sketch..."):
