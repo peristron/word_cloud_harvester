@@ -2,6 +2,7 @@
 #  + Standard Mode (Rich UI for small files)
 #  + Streaming Mode (Low RAM for massive files)
 #  + Sketch Mode (Instant loading of offline analysis)
+#  + ADDED: UI Guidance, Tooltips, and Helper Text
 #
 import io
 import re
@@ -113,7 +114,6 @@ def format_duration(seconds: float) -> str:
     m, s = divmod(r, 60)
     return f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:d}:{s:02d}"
 
-# --- NEW: Web Scraping Helper
 class VirtualFile:
     def __init__(self, name: str, text_content: str):
         self.name = name
@@ -138,7 +138,6 @@ def fetch_url_content(url: str) -> Optional[str]:
 # DATA PROCESSING WRAPPERS
 # ------------------------------------------------
 
-# Wrapper to use `text_processor.py` inside the App's UI flow
 def process_rows_iter(
     rows_iter: Iterable[str],
     remove_chat: bool, remove_html: bool, unescape: bool, remove_urls: bool,
@@ -148,8 +147,6 @@ def process_rows_iter(
     compute_bigrams: bool = False, progress_cb: Optional[Callable[[int], None]] = None, update_every: int = 2_000,
 ) -> Dict:
     start_time = time.perf_counter()
-    
-    # Setup TP resources
     stopwords = set(STOPWORDS).union(user_single_stopwords)
     if add_preps: stopwords.update(tp.default_prepositions())
     trans_map = tp.build_punct_translation(keep_hyphens, keep_apostrophes)
@@ -178,25 +175,18 @@ def process_rows_iter(
 
 
 def process_large_file_stream(file_obj, chunksize, col_name, opts):
-    """
-    In-App "Harvester" Mode.
-    Reads huge files in chunks, updates stats, deletes text.
-    """
     status_text = st.empty()
     prog_bar = st.progress(0)
-    
     word_counter = Counter()
     bigram_counter = Counter()
     total_docs = 0
     
-    # Setup Resources
     stop_phrases, stop_singles = tp.parse_user_stopwords(opts['stopwords'])
     stopwords = set(STOPWORDS).union(stop_singles)
     if opts['add_preps']: stopwords.update(tp.default_prepositions())
     trans_map = tp.build_punct_translation(opts['keep_hyphens'], opts['keep_apostrophes'])
     phrase_pat = tp.build_phrase_pattern(stop_phrases)
 
-    # Online LDA Setup
     lda = None
     vectorizer = None
     if opts['enable_topics'] and LatentDirichletAllocation:
@@ -204,7 +194,6 @@ def process_large_file_stream(file_obj, chunksize, col_name, opts):
         lda = LatentDirichletAllocation(n_components=opts['n_topics'], learning_method='online', batch_size=chunksize, random_state=42)
         is_lda_init = False
 
-    # Streaming Logic
     fname = file_obj.name.lower()
     
     def chunk_generator():
@@ -217,7 +206,6 @@ def process_large_file_stream(file_obj, chunksize, col_name, opts):
             for i in range(0, len(df), chunksize):
                 yield df.iloc[i:i+chunksize][col_name].dropna().astype(str).tolist()
 
-    # Process Loop
     for i, texts in enumerate(chunk_generator()):
         clean_chunk = []
         for text in texts:
@@ -230,7 +218,6 @@ def process_large_file_stream(file_obj, chunksize, col_name, opts):
                 if opts['bigrams']: bigram_counter.update(tuple(pairwise(tokens)))
                 if lda: clean_chunk.append(" ".join(tokens))
         
-        # Train LDA
         if lda and clean_chunk:
             try:
                 if not is_lda_init:
@@ -339,6 +326,21 @@ def generate_ai_insights(counts, bigrams, config, graph_context):
 st.set_page_config(page_title="Analytics Engine", layout="wide")
 st.title("🧠 Multi-Modal Text Analytics")
 
+# --- UI GUIDE EXPANDER ---
+with st.expander("📘 Quick Guide & Glossary (Click to Expand)", expanded=False):
+    st.markdown("""
+    ### 📂 **Input Modes**
+    1.  **Standard (Small/Medium):** The default. Use this for standard PDFs, VTTs, or CSVs/Excels with < 500k rows. 
+    2.  **Streaming (Large Files):** Use this for **Massive CSVs (100MB+)**. It processes the file in chunks to prevent crashes. *Note: Requires you to type the Column Name manually.*
+    3.  **Load Sketch:** Loads a `.pkl` file you previously saved. Useful for instantly reopening a massive analysis without re-waiting.
+
+    ### 📊 **Visualizations**
+    *   **Word Cloud:** Size = Frequency. Color = Sentiment (Green=Pos, Red=Neg).
+    *   **Network Graph:** Shows which words appear next to each other.
+    *   **Themes (LDA/NMF):** AI-detected "hidden topics" in your text.
+    *   **Bayesian Sentiment:** A statistical confidence interval for how positive/negative the text really is.
+    """)
+
 analyzer = setup_sentiment_analyzer()
 
 # --- SIDEBAR ---
@@ -349,31 +351,39 @@ with st.sidebar:
     if st.session_state['authenticated']:
         st.success("AI Features Unlocked")
         ai_p = st.radio("Provider", ["xAI", "OpenAI"])
-        # (Simplified key logic for brevity)
         key_name = "openai_api_key" if ai_p=="OpenAI" else "xai_api_key"
         api_key = st.secrets.get(key_name, "")
         if not api_key: api_key = st.text_input(f"{key_name}", type="password")
         ai_conf = {'api_key': api_key, 'base_url': "https://api.x.ai/v1" if ai_p=="xAI" else None, 'model_name': 'gpt-4o' if ai_p=="OpenAI" else 'grok-beta', 'price_in': 0.15, 'price_out': 0.60}
         if st.button("Logout"): logout(); st.rerun()
     else:
-        with st.expander("AI Login"):
-            st.text_input("Password", type="password", key="password_input", on_change=perform_login)
+        with st.expander("🔐 AI Login"):
+            st.text_input("Password", type="password", key="password_input", on_change=perform_login, help="Enter admin password to unlock generative AI summaries.")
 
     st.divider()
     
     # 2. INPUT MODE
     st.markdown("### 📂 Input Mode")
-    input_mode = st.radio("Select Mode", ["Standard (Small/Medium Files)", "Streaming (Large Files)", "Load Sketch (.pkl)"])
+    input_mode = st.radio(
+        "Select Processing Strategy", 
+        ["Standard (Small/Medium Files)", "Streaming (Large Files)", "Load Sketch (.pkl)"],
+        help="Choose 'Streaming' for files > 200MB to avoid running out of memory."
+    )
     
+    # Contextual Help Text
     if input_mode == "Standard (Small/Medium Files)":
-        url_input = st.text_area("URLs (one per line)", height=60)
+        st.caption("✅ **Best for:** Most users. Supports PDF, VTT, JSON, and standard CSV/Excel files.")
+        url_input = st.text_area("URLs (one per line)", height=60, help="App will scrape visible text from these pages.")
         manual_input = st.text_area("Manual Text", height=60)
         uploaded_files = st.file_uploader("Upload Files", accept_multiple_files=True, type=['csv','xlsx','pdf','txt','vtt','json'])
+        
     elif input_mode == "Streaming (Large Files)":
-        st.info("Uses chunked processing. Low RAM usage.")
+        st.caption("🚀 **Best for:** Massive files (100MB - 1GB). Reads file in small batches. *CSV/Excel only.*")
         large_file = st.file_uploader("Upload ONE Large CSV/Excel", type=['csv', 'xlsx'])
-        target_col = st.text_input("Column Name (Exact Match)")
+        target_col = st.text_input("Column Name (Exact Match)", help="The exact header name of the text column in your CSV/Excel.")
+        
     else:
+        st.caption("💾 **Best for:** Re-opening a previously saved analysis instantly.")
         uploaded_sketch = st.file_uploader("Upload sketch.pkl", type=['pkl'])
 
     st.divider()
@@ -387,20 +397,20 @@ with st.sidebar:
     height = st.slider("Height", 300, 1400, 600)
     
     st.markdown("### 🔬 Analysis")
-    enable_sent = st.checkbox("Enable Sentiment", True)
+    enable_sent = st.checkbox("Enable Sentiment", True, help="Colors words by sentiment (Green=Pos, Red=Neg). Disabling speeds up processing.")
     pos_th = st.slider("Pos Thresh", 0.0, 1.0, 0.05)
     neg_th = st.slider("Neg Thresh", -1.0, 0.0, -0.05)
     
     st.markdown("### 🧹 Cleaning")
-    rem_chat = st.checkbox("No Chat Artifacts", True)
+    rem_chat = st.checkbox("No Chat Artifacts", True, help="Removes timestamps like '10:00 AM' and names like 'User:'")
     rem_html = st.checkbox("No HTML", True)
-    stop_txt = st.text_area("Stopwords", "firstname.lastname")
+    stop_txt = st.text_area("Stopwords", "firstname.lastname", help="Comma-separated list of words/phrases to ignore.")
     user_phrase_sw, user_single_sw = tp.parse_user_stopwords(stop_txt)
     
     st.markdown("### ⚙️ Advanced")
-    compute_bigrams = st.checkbox("Bigrams/Graph", True)
+    compute_bigrams = st.checkbox("Bigrams/Graph", True, help="Detects 2-word phrases and builds the Network Graph.")
     encoding_choice = st.selectbox("Encoding", ["auto", "latin-1"])
-    topic_model_type = st.selectbox("Topic Model", ["LDA", "NMF"])
+    topic_model_type = st.selectbox("Topic Model", ["LDA", "NMF"], help="LDA is better for long text. NMF is better for short, distinct topics.")
     n_topics = st.slider("Topics", 2, 10, 4)
 
 # ------------------------------------------------
@@ -478,7 +488,7 @@ elif input_mode == "Standard (Small/Medium Files)":
                 # Check cols
                 prev = tp.get_csv_preview(bytes_data, encoding_choice)
                 if not prev.empty and len(prev.columns) > 1:
-                    with st.expander(f"Cols for {f.name}"):
+                    with st.expander(f"Select Columns for {f.name}", expanded=True):
                         cols = st.multiselect("Select Cols", prev.columns, prev.columns[0], key=f"c_{i}")
                         rows_iter = tp.iter_csv_selected_columns(bytes_data, encoding_choice, ",", True, cols)
                 else: rows_iter = tp.read_rows_raw_lines(bytes_data, encoding_choice)
@@ -644,4 +654,19 @@ if combined_counts:
         st.download_button("Download .pkl Sketch", b, "analysis.pkl")
 
 else:
-    st.info("👆 Please upload files or enter text to begin.")
+    # --- EMPTY STATE / GETTING STARTED GUIDE ---
+    st.info("👋 **Welcome!** Select an **Input Mode** in the sidebar to begin.")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("### 1. Standard")
+        st.caption("For everyday files.")
+        st.markdown("Drag & drop CSVs, Excel, PDFs, or Paste Text.")
+    with col2:
+        st.markdown("### 2. Streaming")
+        st.caption("For massive datasets.")
+        st.markdown("Analyzes 100MB+ files in chunks without crashing.")
+    with col3:
+        st.markdown("### 3. Sketch")
+        st.caption("For instant replay.")
+        st.markdown("Reload a previously saved analysis.")
