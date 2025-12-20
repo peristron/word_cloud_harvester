@@ -1,20 +1,18 @@
-#  Word Cloud & Graph Analyzer (Production Ready)
-#  + Standard Mode (Rich UI for small files)
-#  + Streaming Mode (Low RAM for massive files)
-#  + Sketch Mode (Instant loading of offline analysis)
-#  + ADDED: UI Guidance, Tooltips, and Helper Text
+#  THE UNSTRUCTURED DATA INTEL ENGINE
+#  Architecture: Hybrid (Streaming In-Browser + Offline Sketch Import)
 #
 import io
 import re
 import html
 import gc
 import time
+import csv
 import json
 import math
-import joblib
+import string
 import numpy as np
 from collections import Counter
-from typing import Dict, List, Tuple, Iterable, Optional, Callable
+from typing import Dict, List, Tuple, Iterable, Optional, Callable, Any
 
 import pandas as pd
 import streamlit as st
@@ -25,56 +23,161 @@ from matplotlib import font_manager
 from itertools import pairwise
 import openai
 
-# --- Shared Logic Import
-import text_processor as tp
-
 # --- graph imports
 import networkx as nx
 import networkx.algorithms.community as nx_comm
 from streamlit_agraph import agraph, Node, Edge, Config
 
-# --- External Imports
+# --- NEW: Web Scraping Imports
 try:
     import requests
     from bs4 import BeautifulSoup
-except ImportError: requests = None; BeautifulSoup = None
+except ImportError:
+    requests = None
+    BeautifulSoup = None
 
+# --- NEW: Bayesian / ML Imports
 try:
     from scipy.stats import beta as beta_dist
-except ImportError: beta_dist = None
+except ImportError:
+    beta_dist = None
 
 try:
     from sklearn.decomposition import LatentDirichletAllocation, NMF
     from sklearn.feature_extraction import DictVectorizer
-    from sklearn.feature_extraction.text import CountVectorizer
 except ImportError:
-    LatentDirichletAllocation = None; NMF = None; DictVectorizer = None; CountVectorizer = None
+    LatentDirichletAllocation = None
+    NMF = None
+    DictVectorizer = None
 
+# --- optional imports
 try:
     import openpyxl
-except ImportError: openpyxl = None
+except ImportError:
+    openpyxl = None
+
 try:
     import pypdf
-except ImportError: pypdf = None
+except ImportError:
+    pypdf = None
+
+# --- PPTX Support
 try:
     import pptx
-except ImportError: pptx = None
+except ImportError:
+    pptx = None
+
 try:
     import nltk
     from nltk.sentiment.vader import SentimentIntensityAnalyzer
-except ImportError: nltk = None; SentimentIntensityAnalyzer = None
+except ImportError:
+    nltk = None
+    SentimentIntensityAnalyzer = None
 
-# ------------------------------------------------
-# SESSION & AUTH
-# ------------------------------------------------
+# precompiled patterns
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+CHAT_ARTIFACT_RE = re.compile(
+    r":\w+:"
+    r"|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|yesterday) at \d{1,2}:\d{2}\b"
+    r"|\b\d+\s+repl(?:y|ies)\b"
+    r"|\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3}"
+    r"|\[[^\]]+\]",
+    flags=re.IGNORECASE
+)
+
+# ---------------------------
+# SKETCHING ARCHITECTURE (The "Space")
+# ---------------------------
+
+class StreamScanner:
+    """
+    Acts as the repository for 'extracted information' (the Sketch).
+    It accumulates statistical data while discarding raw text.
+    It can also Export to JSON and Import from JSON.
+    """
+    def __init__(self):
+        self.global_counts = Counter()
+        self.global_bigrams = Counter()
+        self.total_rows_processed = 0
+        self.topic_docs: List[Counter] = [] 
+        self.current_doc_accum = Counter()
+        self.doc_accum_size = 0
+        self.DOC_BATCH_SIZE = 500 
+
+    def ingest_chunk_stats(self, chunk_counts: Counter, chunk_bigrams: Counter, row_count: int):
+        self.global_counts.update(chunk_counts)
+        self.global_bigrams.update(chunk_bigrams)
+        self.total_rows_processed += row_count
+        
+        self.current_doc_accum.update(chunk_counts)
+        self.doc_accum_size += row_count
+        
+        if self.doc_accum_size >= self.DOC_BATCH_SIZE:
+            self.topic_docs.append(self.current_doc_accum)
+            self.current_doc_accum = Counter()
+            self.doc_accum_size = 0
+
+    def finalize(self):
+        if self.doc_accum_size > 0 and self.current_doc_accum:
+            self.topic_docs.append(self.current_doc_accum)
+            self.current_doc_accum = Counter()
+            self.doc_accum_size = 0
+
+    def to_json(self) -> str:
+        """Serializes the sketch to a JSON string."""
+        # Convert bigram tuples ('a','b') to string "a|b" for JSON compatibility
+        serializable_bigrams = {f"{k[0]}|{k[1]}": v for k, v in self.global_bigrams.items()}
+        
+        data = {
+            "total_rows": self.total_rows_processed,
+            "counts": dict(self.global_counts),
+            "bigrams": serializable_bigrams,
+            "topic_docs": [dict(c) for c in self.topic_docs]
+        }
+        return json.dumps(data)
+
+    def load_from_json(self, json_str: str):
+        """Hydrates the sketch from a JSON string."""
+        try:
+            data = json.loads(json_str)
+            self.total_rows_processed = data.get("total_rows", 0)
+            self.global_counts = Counter(data.get("counts", {}))
+            
+            # Convert "a|b" strings back to ('a','b') tuples
+            raw_bigrams = data.get("bigrams", {})
+            self.global_bigrams = Counter()
+            for k, v in raw_bigrams.items():
+                if "|" in k:
+                    parts = k.split("|", 1)
+                    self.global_bigrams[(parts[0], parts[1])] = v
+            
+            self.topic_docs = [Counter(d) for d in data.get("topic_docs", [])]
+            return True
+        except Exception as e:
+            print(f"Error loading sketch: {e}")
+            return False
+
+# Initialize Session State
+if 'sketch' not in st.session_state: st.session_state['sketch'] = StreamScanner()
 if 'total_cost' not in st.session_state: st.session_state['total_cost'] = 0.0
 if 'total_tokens' not in st.session_state: st.session_state['total_tokens'] = 0
 if 'authenticated' not in st.session_state: st.session_state['authenticated'] = False
 if 'auth_error' not in st.session_state: st.session_state['auth_error'] = False
 if 'ai_response' not in st.session_state: st.session_state['ai_response'] = ""
 
+def reset_sketch():
+    st.session_state['sketch'] = StreamScanner()
+    st.session_state['ai_response'] = ""
+    gc.collect()
+
+# 
+# auth/session utils
+# 
+
 def perform_login():
-    if st.session_state.password_input == st.secrets.get("auth_password", "admin"):
+    password = st.session_state.password_input
+    correct_password = st.secrets.get("auth_password", "admin")
+    if password == correct_password:
         st.session_state['authenticated'] = True
         st.session_state['auth_error'] = False
         st.session_state['password_input'] = "" 
@@ -85,9 +188,9 @@ def logout():
     st.session_state['authenticated'] = False
     st.session_state['ai_response'] = ""
 
-# ------------------------------------------------
-# UTILITIES
-# ------------------------------------------------
+# 
+# utilities & setup
+# 
 
 @st.cache_resource(show_spinner="Initializing sentiment analyzer...")
 def setup_sentiment_analyzer():
@@ -96,6 +199,11 @@ def setup_sentiment_analyzer():
     except LookupError: nltk.download('vader_lexicon')
     return SentimentIntensityAnalyzer()
 
+def prefer_index(options: List[str], preferred: List[str]) -> int:
+    for name in preferred:
+        if name in options: return options.index(name)
+    return 0 if options else -1
+
 @st.cache_data(show_spinner=False)
 def list_system_fonts() -> Dict[str, str]:
     mapping: Dict[str, str] = {}
@@ -103,10 +211,34 @@ def list_system_fonts() -> Dict[str, str]:
         if fe.name not in mapping: mapping[fe.name] = fe.fname
     return dict(sorted(mapping.items(), key=lambda x: x[0].lower()))
 
-def prefer_index(options: List[str], preferred: List[str]) -> int:
-    for name in preferred:
-        if name in options: return options.index(name)
-    return 0
+def build_punct_translation(keep_hyphens: bool, keep_apostrophes: bool) -> dict:
+    punct = string.punctuation
+    if keep_hyphens: punct = punct.replace("-", "")
+    if keep_apostrophes: punct = punct.replace("'", "")
+    return str.maketrans("", "", punct)
+
+def parse_user_stopwords(raw: str) -> Tuple[List[str], List[str]]:
+    raw = raw.replace("\n", ",").replace(".", ",")
+    phrases, singles = [], []
+    for item in [x.strip() for x in raw.split(",") if x.strip()]:
+        if " " in item: phrases.append(item.lower())
+        else: singles.append(item.lower())
+    return phrases, singles
+
+def default_prepositions() -> set:
+    return {'about', 'above', 'across', 'after', 'against', 'along', 'among', 'around', 'at', 'before', 'behind', 'below', 'beneath', 'beside', 'between', 'beyond', 'but', 'by', 'concerning', 'despite', 'down', 'during', 'except', 'for', 'from', 'in', 'inside', 'into', 'like', 'near', 'of', 'off', 'on', 'onto', 'out', 'outside', 'over', 'past', 'regarding', 'since', 'through', 'throughout', 'to', 'toward', 'under', 'underneath', 'until', 'up', 'upon', 'with', 'within', 'without'}
+
+def build_phrase_pattern(phrases: List[str]) -> Optional[re.Pattern]:
+    if not phrases: return None
+    escaped = [re.escape(p) for p in phrases if p]
+    if not escaped: return None
+    return re.compile(rf"\b(?:{'|'.join(escaped)})\b", flags=re.IGNORECASE)
+
+def estimate_row_count_from_bytes(file_bytes: bytes) -> int:
+    if not file_bytes: return 0
+    n = file_bytes.count(b"\n")
+    if not file_bytes.endswith(b"\n"): n += 1
+    return n
 
 def format_duration(seconds: float) -> str:
     seconds = int(seconds)
@@ -114,559 +246,1078 @@ def format_duration(seconds: float) -> str:
     m, s = divmod(r, 60)
     return f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:d}:{s:02d}"
 
+def make_unique_header(raw_names: List[Optional[str]]) -> List[str]:
+    seen: Dict[str, int] = {}
+    result: List[str] = []
+    for i, nm in enumerate(raw_names):
+        name = (str(nm).strip() if nm is not None else "")
+        if not name: name = f"col_{i}"
+        if name in seen:
+            seen[name] += 1
+            unique = f"{name}__{seen[name]}"
+        else:
+            seen[name] = 1
+            unique = name
+        result.append(unique)
+    return result
+
+# --- NEW: Web Scraping Helper
 class VirtualFile:
     def __init__(self, name: str, text_content: str):
         self.name = name
         self._bytes = text_content.encode('utf-8')
+
     def getvalue(self) -> bytes:
         return self._bytes
 
 def fetch_url_content(url: str) -> Optional[str]:
     if not requests or not BeautifulSoup: return None
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
+        
         soup = BeautifulSoup(response.content, 'html.parser')
-        for script in soup(["script", "style", "nav", "footer"]): script.decompose()
-        return soup.get_text(separator=' ', strip=True)
+        for script in soup(["script", "style", "nav", "footer"]):
+            script.decompose()
+            
+        text = soup.get_text(separator=' ', strip=True)
+        return text
     except Exception as e:
         st.toast(f"Error fetching {url}: {str(e)}", icon="⚠️")
         return None
 
-# ------------------------------------------------
-# DATA PROCESSING WRAPPERS
-# ------------------------------------------------
+# 
+# row readers
+# 
 
-def process_rows_iter(
+def read_rows_raw_lines(file_bytes: bytes, encoding_choice: str = "auto") -> Iterable[str]:
+    def _iter_with_encoding(enc: str):
+        bio = io.BytesIO(file_bytes)
+        with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline=None) as wrapper:
+            for line in wrapper: yield line.rstrip("\r\n")
+    if encoding_choice == "latin-1": yield from _iter_with_encoding("latin-1")
+    else: yield from _iter_with_encoding("utf-8")
+
+def read_rows_vtt(file_bytes: bytes, encoding_choice: str = "auto") -> Iterable[str]:
+    for line in read_rows_raw_lines(file_bytes, encoding_choice):
+        line = line.strip()
+        if not line or line == "WEBVTT" or "-->" in line or line.isdigit(): continue
+        if ":" in line:
+            parts = line.split(":", 1)
+            if len(parts) > 1 and len(parts[0]) < 30 and " " in parts[0]:
+                yield parts[1].strip()
+                continue
+        yield line
+
+def read_rows_pdf(file_bytes: bytes) -> Iterable[str]:
+    if pypdf is None: return
+    bio = io.BytesIO(file_bytes)
+    try:
+        reader = pypdf.PdfReader(bio)
+        for page in reader.pages:
+            text = page.extract_text()
+            if text: yield text
+    except Exception:
+        yield ""
+
+def read_rows_pptx(file_bytes: bytes) -> Iterable[str]:
+    if pptx is None: return
+    bio = io.BytesIO(file_bytes)
+    try:
+        prs = pptx.Presentation(bio)
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "has_text_frame") and shape.has_text_frame:
+                    if shape.text: yield shape.text
+    except Exception:
+        yield ""
+
+def read_rows_json(file_bytes: bytes, selected_key: str = None) -> Iterable[str]:
+    bio = io.BytesIO(file_bytes)
+    try:
+        wrapper = io.TextIOWrapper(bio, encoding="utf-8", errors="replace")
+        for line in wrapper:
+            if not line.strip(): continue
+            try:
+                obj = json.loads(line)
+                if selected_key and isinstance(obj, dict): yield str(obj.get(selected_key, ""))
+                elif isinstance(obj, str): yield obj
+                else: yield str(obj)
+            except json.JSONDecodeError:
+                bio.seek(0)
+                data = json.load(wrapper)
+                if isinstance(data, list):
+                    for item in data:
+                        if selected_key and isinstance(item, dict): yield str(item.get(selected_key, ""))
+                        else: yield str(item)
+                elif isinstance(data, dict):
+                     if selected_key: yield str(data.get(selected_key, ""))
+                     else: yield str(data)
+                break 
+    except Exception:
+        pass
+
+# --csv/excel utils
+
+def detect_csv_num_cols(file_bytes: bytes, encoding_choice: str = "auto", delimiter: str = ",") -> int:
+    enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
+    bio = io.BytesIO(file_bytes)
+    with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
+        rdr = csv.reader(wrapper, delimiter=delimiter)
+        row = next(rdr, None)
+        return len(row) if row is not None else 0
+
+def get_csv_columns(file_bytes: bytes, encoding_choice: str = "auto", delimiter: str = ",", has_header: bool = True) -> List[str]:
+    enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
+    bio = io.BytesIO(file_bytes)
+    with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
+        rdr = csv.reader(wrapper, delimiter=delimiter)
+        first = next(rdr, None)
+        if first is None: return []
+        return make_unique_header(first) if has_header else [f"col_{i}" for i in range(len(first))]
+
+def get_csv_preview(file_bytes: bytes, encoding_choice: str = "auto", delimiter: str = ",", has_header: bool = True, rows: int = 5) -> pd.DataFrame:
+    enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
+    bio = io.BytesIO(file_bytes)
+    try:
+        df = pd.read_csv(bio, delimiter=delimiter, header=0 if has_header else None, nrows=rows, encoding=enc, on_bad_lines='skip')
+        if not has_header: df.columns = [f"col_{i}" for i in range(len(df.columns))]
+        return df
+    except:
+        return pd.DataFrame()
+
+def iter_csv_selected_columns(file_bytes: bytes, encoding_choice: str, delimiter: str, has_header: bool, selected_columns: List[str], join_with: str = " ", drop_empty: bool = True) -> Iterable[str]:
+    enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
+    bio = io.BytesIO(file_bytes)
+    with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
+        rdr = csv.reader(wrapper, delimiter=delimiter)
+        first = next(rdr, None)
+        if first is None: return
+        
+        if has_header:
+            header = make_unique_header(first)
+            name_to_idx = {n: i for i, n in enumerate(header)}
+        else:
+            name_to_idx = {f"col_{i}": i for i in range(len(first))}
+            idxs = [name_to_idx[n] for n in selected_columns if n in name_to_idx]
+            vals = [first[i] if i < len(first) else "" for i in idxs]
+            if drop_empty: vals = [v for v in vals if v]
+            yield join_with.join(str(v) for v in vals)
+
+        idxs = [name_to_idx[n] for n in selected_columns if n in name_to_idx]
+        for row in rdr:
+            vals = [row[i] if i < len(row) else "" for i in idxs]
+            if drop_empty: vals = [v for v in vals if v]
+            yield join_with.join(str(v) for v in vals)
+
+def get_excel_sheetnames(file_bytes: bytes) -> List[str]:
+    if openpyxl is None: return []
+    bio = io.BytesIO(file_bytes)
+    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+    sheets = list(wb.sheetnames)
+    wb.close()
+    return sheets
+
+def get_excel_preview(file_bytes: bytes, sheet_name: str, has_header: bool = True, rows: int = 5) -> pd.DataFrame:
+    if openpyxl is None: return pd.DataFrame()
+    bio = io.BytesIO(file_bytes)
+    try:
+        df = pd.read_excel(bio, sheet_name=sheet_name, header=0 if has_header else None, nrows=rows, engine='openpyxl')
+        if not has_header: df.columns = [f"col_{i}" for i in range(len(df.columns))]
+        return df
+    except:
+        return pd.DataFrame()
+
+def get_excel_columns(file_bytes: bytes, sheet_name: str, has_header: bool = True) -> List[str]:
+    df = get_excel_preview(file_bytes, sheet_name, has_header, rows=1)
+    if not df.empty: return list(df.columns)
+    return []
+
+def excel_estimate_rows(file_bytes: bytes, sheet_name: str, has_header: bool = True) -> int:
+    if openpyxl is None: return 0
+    bio = io.BytesIO(file_bytes)
+    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+    ws = wb[sheet_name]
+    total = ws.max_row or 0
+    wb.close()
+    if has_header and total > 0: total -= 1
+    return max(total, 0)
+
+def iter_excel_selected_columns(file_bytes: bytes, sheet_name: str, has_header: bool, selected_columns: List[str], join_with: str = " ", drop_empty: bool = True) -> Iterable[str]:
+    if openpyxl is None: return
+    bio = io.BytesIO(file_bytes)
+    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+    ws = wb[sheet_name]
+    rows_iter = ws.iter_rows(values_only=True)
+    first = next(rows_iter, None)
+    if first is None: wb.close(); return
+    
+    if has_header:
+        header = make_unique_header(list(first))
+        name_to_idx = {n: i for i, n in enumerate(header)}
+        idxs = [name_to_idx[n] for n in selected_columns if n in name_to_idx]
+    else:
+        header = [f"col_{i}" for i in range(len(first))]
+        name_to_idx = {n: i for i, n in enumerate(header)}
+        idxs = [name_to_idx[n] for n in selected_columns if n in name_to_idx]
+        vals = [first[i] if i < len(first) else "" for i in idxs]
+        if drop_empty: vals = [v for v in vals if v]
+        yield join_with.join("" if v is None else str(v) for v in vals)
+
+    for row in rows_iter:
+        vals = [row[i] if (row is not None and i < len(row)) else "" for i in idxs]
+        if drop_empty: vals = [v for v in vals if v]
+        yield join_with.join("" if v is None else str(v) for v in vals)
+    wb.close()
+
+# ---------------------------
+# core processing
+# 
+
+def is_url_token(tok: str) -> bool:
+    t = tok.strip("()[]{}<>,.;:'\"!?").lower()
+    if not t: return False
+    return ("://" in t) or t.startswith("www.")
+
+def process_chunk_iter(
     rows_iter: Iterable[str],
-    remove_chat: bool, remove_html: bool, unescape: bool, remove_urls: bool,
+    remove_chat_artifacts: bool, remove_html_tags: bool, unescape_entities: bool, remove_urls: bool,
     keep_hyphens: bool, keep_apostrophes: bool,
     user_phrase_stopwords: Tuple[str, ...], user_single_stopwords: Tuple[str, ...],
     add_preps: bool, drop_integers: bool, min_word_len: int,
-    compute_bigrams: bool = False, progress_cb: Optional[Callable[[int], None]] = None, update_every: int = 2_000,
-) -> Dict:
-    start_time = time.perf_counter()
-    stopwords = set(STOPWORDS).union(user_single_stopwords)
-    if add_preps: stopwords.update(tp.default_prepositions())
-    trans_map = tp.build_punct_translation(keep_hyphens, keep_apostrophes)
-    phrase_pattern = tp.build_phrase_pattern(list(user_phrase_stopwords))
+    compute_bigrams: bool, scanner: StreamScanner,
+    progress_cb: Optional[Callable[[int], None]] = None, chunk_idx: int = 0
+):
+    stopwords = set(STOPWORDS)
+    stopwords.update(user_single_stopwords)
+    if add_preps: stopwords.update(default_prepositions())
+    translate_map = build_punct_translation(keep_hyphens=keep_hyphens, keep_apostrophes=keep_apostrophes)
+    phrase_pattern = build_phrase_pattern(list(user_phrase_stopwords))
     
-    counts = Counter()
-    bigram_counts = Counter() if compute_bigrams else None
-    total_rows = 0
+    local_counts = Counter()
+    local_bigrams = Counter() if compute_bigrams else Counter()
+    
+    row_count = 0
+    _remove_chat, _remove_html, _unescape, _remove_urls = remove_chat_artifacts, remove_html_tags, unescape_entities, remove_urls
+    _min_len, _drop_int, _stopwords = min_word_len, drop_integers, stopwords
+    _is_url, _trans, _ppat = is_url_token, translate_map, phrase_pattern
 
     for line in rows_iter:
-        total_rows += 1
-        tokens = tp.clean_and_tokenize(
-            str(line) if line else "", remove_chat, remove_html, unescape, remove_urls,
-            trans_map, stopwords, phrase_pattern, min_word_len, drop_integers
-        )
-        if tokens:
-            counts.update(tokens)
-            if compute_bigrams and len(tokens) > 1:
-                bigram_counts.update(tuple(pairwise(tokens)))
-        
-        if progress_cb and (total_rows % update_every == 0): progress_cb(total_rows)
+        row_count += 1
+        text = line if isinstance(line, str) else ("" if line is None else str(line))
+        if _remove_chat: text = CHAT_ARTIFACT_RE.sub(" ", text)
+        if _remove_html: text = HTML_TAG_RE.sub(" ", text)
+        if _unescape:
+            try: text = html.unescape(text)
+            except MemoryError: pass
+        text = text.lower()
+        if _ppat: text = _ppat.sub(" ", text)
+        filtered_tokens_line: List[str] = []
+        for t in text.split():
+            if _remove_urls and _is_url(t): continue
+            t = t.translate(_trans)
+            if not t or len(t) < _min_len or (_drop_int and t.isdigit()) or t in _stopwords: continue
+            filtered_tokens_line.append(t)
+        if filtered_tokens_line:
+            local_counts.update(filtered_tokens_line)
+            if compute_bigrams and len(filtered_tokens_line) > 1:
+                local_bigrams.update(tuple(bg) for bg in pairwise(filtered_tokens_line))
+        if progress_cb and (row_count % 2000 == 0): progress_cb(row_count)
 
-    if progress_cb: progress_cb(total_rows)
-    elapsed = time.perf_counter() - start_time
-    return {"counts": counts, "bigrams": bigram_counts or Counter(), "rows": total_rows, "elapsed": elapsed}
-
-
-def process_large_file_stream(file_obj, chunksize, col_name, opts):
-    status_text = st.empty()
-    prog_bar = st.progress(0)
-    word_counter = Counter()
-    bigram_counter = Counter()
-    total_docs = 0
+    scanner.ingest_chunk_stats(local_counts, local_bigrams, row_count)
+    if progress_cb: progress_cb(row_count)
     
-    stop_phrases, stop_singles = tp.parse_user_stopwords(opts['stopwords'])
-    stopwords = set(STOPWORDS).union(stop_singles)
-    if opts['add_preps']: stopwords.update(tp.default_prepositions())
-    trans_map = tp.build_punct_translation(opts['keep_hyphens'], opts['keep_apostrophes'])
-    phrase_pat = tp.build_phrase_pattern(stop_phrases)
+    del local_counts
+    del local_bigrams
+    gc.collect()
 
-    lda = None
-    vectorizer = None
-    if opts['enable_topics'] and LatentDirichletAllocation:
-        vectorizer = CountVectorizer(max_features=5000, stop_words='english')
-        lda = LatentDirichletAllocation(n_components=opts['n_topics'], learning_method='online', batch_size=chunksize, random_state=42)
-        is_lda_init = False
-
-    fname = file_obj.name.lower()
-    
-    def chunk_generator():
-        file_obj.seek(0)
-        if fname.endswith('.csv'):
-            for chunk in pd.read_csv(file_obj, usecols=[col_name], chunksize=chunksize, on_bad_lines='skip', encoding='utf-8', engine='python'):
-                yield chunk[col_name].dropna().astype(str).tolist()
-        elif fname.endswith(('.xlsx', '.xlsm')):
-            df = pd.read_excel(file_obj, usecols=[col_name])
-            for i in range(0, len(df), chunksize):
-                yield df.iloc[i:i+chunksize][col_name].dropna().astype(str).tolist()
-
-    for i, texts in enumerate(chunk_generator()):
-        clean_chunk = []
-        for text in texts:
-            tokens = tp.clean_and_tokenize(
-                text, opts['rem_chat'], opts['rem_html'], opts['unescape'], opts['rem_urls'], 
-                trans_map, stopwords, phrase_pat, opts['min_len'], opts['drop_int']
-            )
-            if tokens:
-                word_counter.update(tokens)
-                if opts['bigrams']: bigram_counter.update(tuple(pairwise(tokens)))
-                if lda: clean_chunk.append(" ".join(tokens))
-        
-        if lda and clean_chunk:
-            try:
-                if not is_lda_init:
-                    X = vectorizer.fit_transform(clean_chunk)
-                    lda.partial_fit(X); is_lda_init = True
-                else:
-                    X = vectorizer.transform(clean_chunk)
-                    lda.partial_fit(X)
-            except: pass
-        
-        total_docs += len(texts)
-        status_text.text(f"Processed chunk {i+1} ({total_docs:,} rows)...")
-        del texts, clean_chunk
-        gc.collect()
-
-    prog_bar.progress(100)
-    status_text.success(f"Streaming Complete! {total_docs:,} rows.")
-    return {"word_counter": word_counter, "bigram_counter": bigram_counter, "lda_model": lda, "vectorizer": vectorizer, "total_rows": total_docs}
-
-# ------------------------------------------------
-# ML & STATS
-# ------------------------------------------------
+# --
+# stats/ analytics helpers
+#-
 
 def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
     total_tokens = sum(counts.values())
     unique_tokens = len(counts)
     avg_len = sum(len(word) * count for word, count in counts.items()) / total_tokens if total_tokens else 0
     return {
-        "Total Rows": total_rows, "Total Tokens": total_tokens, "Unique Vocabulary": unique_tokens,
-        "Avg Word Length": round(avg_len, 2), "Lexical Diversity": round(unique_tokens / total_tokens, 4) if total_tokens else 0
+        "Total Rows": total_rows,
+        "Total Tokens": total_tokens,
+        "Unique Vocabulary": unique_tokens,
+        "Avg Word Length": round(avg_len, 2),
+        "Lexical Diversity": round(unique_tokens / total_tokens, 4) if total_tokens else 0
     }
 
-def extract_topics(model, vectorizer, top_n=6):
-    if not model or not vectorizer: return []
+# --- Bayesian / ML Helper Functions
+
+def perform_topic_modeling(synthetic_docs: List[Counter], n_topics: int = 4, top_n_words: int = 6, model_type: str = "LDA") -> Optional[List[Dict]]:
+    if not DictVectorizer: return None
+    if model_type == "LDA" and not LatentDirichletAllocation: return None
+    if model_type == "NMF" and not NMF: return None
+    if len(synthetic_docs) < 1: return None
+    
+    vectorizer = DictVectorizer(sparse=True)
+    dtm = vectorizer.fit_transform(synthetic_docs)
+    
+    model = None
+    if model_type == "LDA":
+        model = LatentDirichletAllocation(n_components=n_topics, random_state=42, learning_method='batch', max_iter=10)
+    elif model_type == "NMF":
+        model = NMF(n_components=n_topics, random_state=42, init='nndsvd')
+    
+    if not model: return None
+    model.fit(dtm)
+    
     feature_names = vectorizer.get_feature_names_out()
     topics = []
+    
     for topic_idx, topic in enumerate(model.components_):
-        top_indices = topic.argsort()[:-top_n - 1:-1]
-        topics.append({"id": topic_idx + 1, "words": [feature_names[i] for i in top_indices]})
+        top_indices = topic.argsort()[:-top_n_words - 1:-1]
+        top_words = [feature_names[i] for i in top_indices]
+        strength = sum(topic[i] for i in top_indices)
+        topics.append({"id": topic_idx + 1, "words": top_words, "strength": strength})
+        
     return topics
 
-def perform_bayesian_sentiment(counts, sentiments, pos_t, neg_t, pre_pos=None, pre_neg=None):
+def perform_bayesian_sentiment_analysis(counts: Counter, sentiments: Dict[str, float], pos_thresh: float, neg_thresh: float) -> Optional[Dict]:
     if not beta_dist: return None
-    pos = pre_pos if pre_pos is not None else sum(counts[w] for w, s in sentiments.items() if s >= pos_t)
-    neg = pre_neg if pre_neg is not None else sum(counts[w] for w, s in sentiments.items() if s <= neg_t)
-    total = pos + neg
-    if total < 1: return None
-    a, b = 1 + pos, 1 + neg
-    mean = a / (a + b)
-    low, high = beta_dist.ppf([0.025, 0.975], a, b)
+    
+    pos_count = sum(counts[w] for w, s in sentiments.items() if s >= pos_thresh)
+    neg_count = sum(counts[w] for w, s in sentiments.items() if s <= neg_thresh)
+    total_informative = pos_count + neg_count
+    if total_informative < 1: return None
+
+    alpha_post = 1 + pos_count
+    beta_post = 1 + neg_count
+    mean_prob = alpha_post / (alpha_post + beta_post)
+    lower_ci, upper_ci = beta_dist.ppf([0.025, 0.975], alpha_post, beta_post)
     x = np.linspace(0, 1, 300)
-    y = beta_dist.pdf(x, a, b)
-    return {"pos": pos, "neg": neg, "mean": mean, "lo": low, "hi": high, "x": x, "y": y}
+    y = beta_dist.pdf(x, alpha_post, beta_post)
+    
+    return {
+        "pos_count": pos_count, "neg_count": neg_count, "total": total_informative,
+        "mean_prob": mean_prob, "ci_low": lower_ci, "ci_high": upper_ci,
+        "x_axis": x, "pdf_y": y
+    }
 
-# ------------------------------------------------
-# VISUALIZATION
-# ------------------------------------------------
+# ---------------------------
+# senttiment, visualization
+# 
 
-def get_sentiments(_analyzer, terms):
+@st.cache_data(show_spinner="Analyzing term sentiment...")
+def get_sentiments(_analyzer, terms: Tuple[str, ...]) -> Dict[str, float]:
     if not _analyzer or not terms: return {}
-    return {t: _analyzer.polarity_scores(t)['compound'] for t in terms}
+    return {term: _analyzer.polarity_scores(term)['compound'] for term in terms}
 
-def create_color_func(sentiments, pos_c, neg_c, neu_c, pos_th, neg_th):
-    def color_func(word, **kwargs):
-        s = sentiments.get(word, 0.0)
-        if s >= pos_th: return pos_c
-        elif s <= neg_th: return neg_c
-        return neu_c
+def create_sentiment_color_func(sentiments: Dict[str, float], pos_color: str, neg_color: str, neu_color: str, pos_threshold: float, neg_threshold: float):
+    def color_func(word, font_size, position, orientation, random_state=None, **kwargs):
+        score = sentiments.get(word, 0.0)
+        if score >= pos_threshold: return pos_color
+        elif score <= neg_threshold: return neg_color
+        else: return neu_color
     return color_func
 
-def build_wordcloud(counts, max_words, w, h, bg, cmap, font, seed, color_func):
+def get_sentiment_category(score: float, pos_threshold: float, neg_threshold: float) -> str:
+    if score >= pos_threshold: return "Positive"
+    if score <= neg_threshold: return "Negative"
+    return "Neutral"
+
+def build_wordcloud_figure_from_counts(counts: Counter, max_words: int, width: int, height: int, bg_color: str, colormap: str, font_path: Optional[str], random_state: int, color_func: Optional[Callable] = None):
     limited = dict(counts.most_common(max_words))
-    wc = WordCloud(width=w, height=h, background_color=bg, colormap=cmap, font_path=font, random_state=seed, color_func=color_func, collocations=False).generate_from_frequencies(limited)
-    fig, ax = plt.subplots(figsize=(w/100, h/100), dpi=100)
-    ax.imshow(wc, interpolation="bilinear"); ax.axis("off")
+    wc = WordCloud(width=width, height=height, background_color=bg_color, colormap=colormap, font_path=font_path, random_state=random_state, color_func=color_func, collocations=False, normalize_plurals=False).generate_from_frequencies(limited)
+    fig_w, fig_h = max(6.0, width / 100.0), max(3.0, height / 100.0)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=100)
+    ax.imshow(wc, interpolation="bilinear")
+    ax.axis("off")
     plt.tight_layout()
     return fig, wc
 
-def fig_to_png(fig):
-    b = BytesIO()
-    fig.savefig(b, format="png", bbox_inches="tight")
-    b.seek(0)
-    return b
+def fig_to_png_bytes(fig: plt.Figure) -> BytesIO:
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.1)
+    buf.seek(0)
+    return buf
 
-def generate_ai_insights(counts, bigrams, config, graph_context):
+
+# ai generation logic
+# ---------------------------
+def generate_ai_insights(counts: Counter, bigrams: Counter, config: dict, graph_context: str = ""):
     try:
-        top_u = [w for w, c in counts.most_common(100)]
-        top_b = [" ".join(bg) for bg, c in bigrams.most_common(30)] if bigrams else []
-        context = f"Top Unigrams: {', '.join(top_u)}\nTop Bigrams: {', '.join(top_b)}\nGraph Clusters:\n{graph_context}"
+        top_unigrams = [w for w, c in counts.most_common(100)]
+        top_bigrams = [" ".join(bg) for bg, c in bigrams.most_common(30)] if bigrams else ["(Bigrams disabled)"]
+        
+        context = f"""
+        Top 100 Unigrams: {', '.join(top_unigrams)}
+        
+        Top 30 Bigrams: {', '.join(top_bigrams)}
+        
+        Network Graph Clusters (detected topics):
+        {graph_context}
+        """
+        
+        system_prompt = """You are a qualitative data analyst. 
+        Analyze the provided word frequency lists (extracted from a text corpus) to identify likely themes, topics, and context.
+        
+        Use the 'Network Graph Clusters' to specifically discuss how concepts are grouped together.
+        
+        Format your response with markdown headers.
+        1. Likely Subject Matter
+        2. Key Themes (based on Clusters)
+        3. Potential Anomalies or Noise
+        """
+        
         client = openai.OpenAI(api_key=config['api_key'], base_url=config['base_url'])
         response = client.chat.completions.create(
             model=config['model_name'],
-            messages=[{"role": "system", "content": "Analyze these text statistics for themes."}, {"role": "user", "content": context}]
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": context}]
         )
+        
         content = response.choices[0].message.content
-        if response.usage:
-            cost = (response.usage.prompt_tokens * config['price_in'] + response.usage.completion_tokens * config['price_out']) / 1e6
+        if hasattr(response, 'usage') and response.usage:
+            in_tok = response.usage.prompt_tokens
+            out_tok = response.usage.completion_tokens
+            cost = (in_tok * config['price_in'] / 1_000_000) + (out_tok * config['price_out'] / 1_000_000)
+            st.session_state['total_tokens'] += (in_tok + out_tok)
             st.session_state['total_cost'] += cost
+            
         return content
-    except Exception as e: return f"AI Error: {str(e)}"
+    except Exception as e:
+        return f"AI Error: {str(e)}"
 
-# ------------------------------------------------
-# MAIN APP UI
-# ------------------------------------------------
+# -
+# main app
+# ------------------------------
 
-st.set_page_config(page_title="Analytics Engine", layout="wide")
-st.title("🧠 Multi-Modal Text Analytics")
+st.set_page_config(page_title="Word Cloud & Graph Analytics", layout="wide")
+st.title("🧠 Multi-File Word Cloud & Graph Analyzer")
 
-# --- UI GUIDE EXPANDER ---
-with st.expander("📘 Quick Guide & Glossary (Click to Expand)", expanded=False):
+
+with st.expander("📘 App Guide (Architecture & Features)", expanded=False):
     st.markdown("""
-    ### 📂 **Input Modes**
-    1.  **Standard (Small/Medium):** The default. Use this for standard PDFs, VTTs, or CSVs/Excels with < 500k rows. 
-    2.  **Streaming (Large Files):** Use this for **Massive CSVs (100MB+)**. It processes the file in chunks to prevent crashes. *Note: Requires you to type the Column Name manually.*
-    3.  **Load Sketch:** Loads a `.pkl` file you previously saved. Useful for instantly reopening a massive analysis without re-waiting.
-
-    ### 📊 **Visualizations**
-    *   **Word Cloud:** Size = Frequency. Color = Sentiment (Green=Pos, Red=Neg).
-    *   **Network Graph:** Shows which words appear next to each other.
-    *   **Themes (LDA/NMF):** AI-detected "hidden topics" in your text.
-    *   **Bayesian Sentiment:** A statistical confidence interval for how positive/negative the text really is.
+    **The Unstructured Data Intel Engine**  
+    This app uses a **Streaming Sketch Architecture** to handle massive datasets securely.
+    
+    1.  **Scanning (The 'Harvester'):** Files are read in chunks. Raw text is processed into a statistical 'Sketch' and immediately discarded from memory (Ephemeral Processing).
+    2.  **The Sketch:** A lightweight summary containing word counts, network edges, and synthetic document vectors.
+    3.  **Bayesian Models:** We apply LDA (Probabilistic) or NMF (Linear) to the sketch to discover hidden themes.
+    4.  **Generative AI:** The sketch summary is sent to the AI to write the final qualitative report.
     """)
+
+st.warning("""
+**⚠️ Data Privacy & Security Notice**
+Data is processed ephemerally. Raw text is not stored. Do not upload files containing sensitive PII on public servers.
+""")
 
 analyzer = setup_sentiment_analyzer()
 
-# --- SIDEBAR ---
+# --- side-bar start-
 with st.sidebar:
-    st.header("⚙️ Config")
-    
-    # 1. AI Auth
+    st.header("🔐 AI Setup")
     if st.session_state['authenticated']:
         st.success("AI Features Unlocked")
-        ai_p = st.radio("Provider", ["xAI", "OpenAI"])
-        key_name = "openai_api_key" if ai_p=="OpenAI" else "xai_api_key"
-        api_key = st.secrets.get(key_name, "")
-        if not api_key: api_key = st.text_input(f"{key_name}", type="password")
-        ai_conf = {'api_key': api_key, 'base_url': "https://api.x.ai/v1" if ai_p=="xAI" else None, 'model_name': 'gpt-4o' if ai_p=="OpenAI" else 'grok-beta', 'price_in': 0.15, 'price_out': 0.60}
+        
+        with st.expander("🤖 Provider Settings", expanded=True):
+            ai_provider = st.radio("Provider", ["xAI (Grok)", "OpenAI (GPT-4o)"])
+            
+            if "OpenAI" in ai_provider:
+                api_key_name = "openai_api_key"
+                base_url = None 
+                model_name = st.selectbox("Model", ["gpt-4o", "gpt-4o-mini"])
+                if "mini" in model_name:
+                    price_in, price_out = 0.15, 0.60
+                else:
+                    price_in, price_out = 2.50, 10.00
+            else:
+                api_key_name = "xai_api_key"
+                base_url = "https://api.x.ai/v1"
+                model_options = {
+                    "Grok 4.1 Fast (Reasoning) [Best Value]": "grok-4-1-fast-reasoning",
+                    "Grok 4": "grok-4-0709",
+                    "Grok 2 (Legacy)": "grok-2-1212"
+                }
+                choice = st.selectbox("Model", list(model_options.keys()))
+                model_name = model_options[choice]
+                
+                if "fast" in model_name:
+                    price_in, price_out = 0.20, 0.50
+                elif "grok-4" in model_name:
+                    price_in, price_out = 3.00, 15.00
+                else:
+                    price_in, price_out = 2.00, 10.00
+
+            api_key = st.secrets.get(api_key_name)
+            if not api_key: api_key = st.text_input(f"Enter {api_key_name}", type="password")
+            
+            ai_config = {
+                'api_key': api_key,
+                'base_url': base_url,
+                'model_name': model_name,
+                'price_in': price_in,
+                'price_out': price_out
+            }
+
+        with st.expander("💰 Cost Estimator", expanded=False):
+            c1, c2 = st.columns(2)
+            c1.markdown(f"**Tokens:**\n{st.session_state['total_tokens']:,}")
+            c2.markdown(f"**Cost:**\n`${st.session_state['total_cost']:.5f}`")
+            if st.button("Reset Cost"):
+                st.session_state['total_cost'] = 0.0
+                st.session_state['total_tokens'] = 0
+                st.rerun()
+        
         if st.button("Logout"): logout(); st.rerun()
     else:
-        with st.expander("🔐 AI Login"):
-            st.text_input("Password", type="password", key="password_input", on_change=perform_login, help="Enter admin password to unlock generative AI summaries.")
+        with st.expander("Unlock AI Features", expanded=True):
+            st.text_input("Password", type="password", key="password_input", on_change=perform_login)
+            if st.session_state['auth_error']: st.error("Incorrect password.")
 
     st.divider()
     
-    # 2. INPUT MODE
-    st.markdown("### 📂 Input Mode")
-    input_mode = st.radio(
-        "Select Processing Strategy", 
-        ["Standard (Small/Medium Files)", "Streaming (Large Files)", "Load Sketch (.pkl)"],
-        help="Choose 'Streaming' for files > 200MB to avoid running out of memory."
+    # --- NEW: Sketch Import + Raw Input ---
+    st.markdown("### 🌐 Web & Files")
+    
+    # NEW: SKETCH IMPORTER
+    sketch_upload = st.file_uploader("📂 Import Pre-computed Sketch (.json)", type=["json"], help="Skip processing by uploading a saved sketch.")
+    if sketch_upload:
+        if st.session_state['sketch'].load_from_json(sketch_upload.getvalue().decode('utf-8')):
+            st.success("Sketch Loaded Successfully!")
+        else:
+            st.error("Invalid Sketch File")
+
+    st.markdown("---")
+    
+    url_input = st.text_area("enter urls (one per line)", height=100, help="The app will scrape the visible text from these pages.")
+    manual_input = st.text_area("paste text manually", height=150, help="Copy text from non-public sites and paste here.")
+    
+    st.info("Performance Tip: Streaming allows files up to ~1GB")
+    uploaded_files = st.file_uploader(
+        "upload files (csv, xlsx, json, txt, vtt, pdf, pptx)",
+        type=["csv", "xlsx", "xlsm", "vtt", "txt", "json", "pdf", "pptx"],
+        accept_multiple_files=True
     )
     
-    # Contextual Help Text
-    if input_mode == "Standard (Small/Medium Files)":
-        st.caption("✅ **Best for:** Most users. Supports PDF, VTT, JSON, and standard CSV/Excel files.")
-        url_input = st.text_area("URLs (one per line)", height=60, help="App will scrape visible text from these pages.")
-        manual_input = st.text_area("Manual Text", height=60)
-        uploaded_files = st.file_uploader("Upload Files", accept_multiple_files=True, type=['csv','xlsx','pdf','txt','vtt','json'])
-        
-    elif input_mode == "Streaming (Large Files)":
-        st.caption("🚀 **Best for:** Massive files (100MB - 1GB). Reads file in small batches. *CSV/Excel only.*")
-        large_file = st.file_uploader("Upload ONE Large CSV/Excel", type=['csv', 'xlsx'])
-        target_col = st.text_input("Column Name (Exact Match)", help="The exact header name of the text column in your CSV/Excel.")
-        
-    else:
-        st.caption("💾 **Best for:** Re-opening a previously saved analysis instantly.")
-        uploaded_sketch = st.file_uploader("Upload sketch.pkl", type=['pkl'])
-
-    st.divider()
-
-    # 3. SETTINGS
-    st.markdown("### 🎨 Visuals")
-    bg_color = st.color_picker("BG Color", "#ffffff")
-    colormap = st.selectbox("Colormap", ["viridis", "plasma", "inferno", "tab10", "rainbow", "Blues"], index=0)
-    max_words = st.slider("Max Words", 50, 3000, 1000)
-    width = st.slider("Width", 600, 2400, 1200)
-    height = st.slider("Height", 300, 1400, 600)
-    
-    st.markdown("### 🔬 Analysis")
-    enable_sent = st.checkbox("Enable Sentiment", True, help="Colors words by sentiment (Green=Pos, Red=Neg). Disabling speeds up processing.")
-    pos_th = st.slider("Pos Thresh", 0.0, 1.0, 0.05)
-    neg_th = st.slider("Neg Thresh", -1.0, 0.0, -0.05)
-    
-    st.markdown("### 🧹 Cleaning")
-    rem_chat = st.checkbox("No Chat Artifacts", True, help="Removes timestamps like '10:00 AM' and names like 'User:'")
-    rem_html = st.checkbox("No HTML", True)
-    stop_txt = st.text_area("Stopwords", "firstname.lastname", help="Comma-separated list of words/phrases to ignore.")
-    user_phrase_sw, user_single_sw = tp.parse_user_stopwords(stop_txt)
-    
-    st.markdown("### ⚙️ Advanced")
-    compute_bigrams = st.checkbox("Bigrams/Graph", True, help="Detects 2-word phrases and builds the Network Graph.")
-    encoding_choice = st.selectbox("Encoding", ["auto", "latin-1"])
-    topic_model_type = st.selectbox("Topic Model", ["LDA", "NMF"], help="LDA is better for long text. NMF is better for short, distinct topics.")
-    n_topics = st.slider("Topics", 2, 10, 4)
-
-# ------------------------------------------------
-# MAIN PROCESSOR
-# ------------------------------------------------
-combined_counts = Counter()
-combined_bigrams = Counter()
-file_results = []
-sketch_data = None
-pre_calc_pos, pre_calc_neg = None, None
-pre_calc_topics = None
-total_processed_rows = 0
-
-# --- PATH A: SKETCH ---
-if input_mode == "Load Sketch (.pkl)" and uploaded_sketch:
-    try:
-        sketch_data = joblib.load(uploaded_sketch)
-        combined_counts = sketch_data["word_counter"]
-        combined_bigrams = sketch_data["bigram_counter"]
-        pre_calc_pos = sketch_data.get("pos_count")
-        pre_calc_neg = sketch_data.get("neg_count")
-        total_processed_rows = sketch_data.get("total_rows", 0)
-        if sketch_data.get("lda_model") and sketch_data.get("vectorizer"):
-            pre_calc_topics = extract_topics(sketch_data["lda_model"], sketch_data["vectorizer"])
-        st.success("Sketch Loaded!")
-    except Exception as e: st.error(f"Error: {e}")
-
-# --- PATH B: STREAMING ---
-elif input_mode == "Streaming (Large Files)" and large_file and target_col:
-    if st.button("Start Streaming Analysis"):
-        opts = {
-            'stopwords': stop_txt, 'add_preps': True, 'keep_hyphens': False, 'keep_apostrophes': False,
-            'rem_chat': rem_chat, 'rem_html': rem_html, 'unescape': True, 'rem_urls': True,
-            'min_len': 2, 'drop_int': True, 'bigrams': compute_bigrams, 
-            'enable_topics': True, 'n_topics': n_topics
-        }
-        res = process_large_file_stream(large_file, 25000, target_col, opts)
-        
-        # Save to session state so it survives re-runs
-        st.session_state['stream_res'] = res
+    if st.button("🗑️ Reset All Data", type="primary"):
+        reset_sketch()
         st.rerun()
 
-    if 'stream_res' in st.session_state:
-        res = st.session_state['stream_res']
-        combined_counts = res['word_counter']
-        combined_bigrams = res['bigram_counter']
-        total_processed_rows = res['total_rows']
-        if res['lda_model']: pre_calc_topics = extract_topics(res['lda_model'], res['vectorizer'])
+    st.markdown("### 🎨 appearance")
+    bg_color = st.color_picker("background color", value="#ffffff")
+    colormap = st.selectbox("colormap", options=["viridis", "plasma", "inferno", "magma", "cividis", "tab10", "tab20", "Dark2", "Set3", "rainbow", "cubehelix", "prism", "Blues", "Greens", "Oranges", "Reds", "Purples", "Greys"], index=0)
+    max_words = st.slider("max words in word cloud", 50, 3000, 1000, 50)
+    width = st.slider("image width (px)", 600, 2400, 1200, 100)
+    height = st.slider("image height (px)", 300, 1400, 600, 50)
+    random_state = st.number_input("random seed", 0, value=42, step=1)
 
-# --- PATH C: STANDARD ---
-elif input_mode == "Standard (Small/Medium Files)":
-    all_inputs = []
-    if url_input:
-        for u in url_input.split('\n'):
-             if u.strip(): 
-                 txt = fetch_url_content(u.strip())
-                 if txt: all_inputs.append(VirtualFile(f"url_{u[:10]}.txt", txt))
-    if manual_input: all_inputs.append(VirtualFile("manual.txt", manual_input))
-    if uploaded_files: all_inputs.extend(uploaded_files)
+    st.markdown("### 🔬 sentiment analysis")
+    enable_sentiment = st.checkbox("enable sentiment analysis", value=False)
+    if enable_sentiment and analyzer is None:
+        st.error("NLTK not found.")
+        enable_sentiment = False
+    pos_threshold, neg_threshold, pos_color, neu_color, neg_color = 0.05, -0.05, '#2ca02c', '#808080', '#d62728'
+    if enable_sentiment:
+        c1, c2 = st.columns(2)
+        with c1: pos_threshold = st.slider("pos threshold", 0.0, 1.0, 0.05, 0.01)
+        with c2: neg_threshold = st.slider("neg threshold", -1.0, 0.0, -0.05, 0.01)
+        c1, c2, c3 = st.columns(3)
+        with c1: pos_color = st.color_picker("pos color", value=pos_color)
+        with c2: neu_color = st.color_picker("neu color", value=neu_color)
+        with c3: neg_color = st.color_picker("neg color", value=neg_color)
 
-    if all_inputs:
-        st.subheader("Processing Files")
-        bar = st.progress(0)
-        for i, f in enumerate(all_inputs):
-            # 1. Determine Read Strategy based on file type
-            fname = f.name.lower()
-            bytes_data = f.getvalue()
-            rows_iter = iter([])
+    st.markdown("### 🧹 cleaning")
+    remove_chat_artifacts = st.checkbox("remove chat artifacts", value=True)
+    remove_html_tags = st.checkbox("strip html tags", value=True)
+    unescape_entities = st.checkbox("unescape html entities", value=True)
+    remove_urls = st.checkbox("remove urls", value=True)
+    keep_hyphens = st.checkbox("keep hyphens", value=False)
+    keep_apostrophes = st.checkbox("keep apostrophes", value=False)
+
+    st.markdown("### 🛑 stopwords")
+    user_input = st.text_area("custom stopwords (comma-separated)", value="firstname.lastname, jane doe")
+    user_phrase_stopwords, user_single_stopwords = parse_user_stopwords(user_input)
+    add_preps = st.checkbox("remove prepositions", value=True)
+    drop_integers = st.checkbox("remove integers", value=True)
+    min_word_len = st.slider("min word length", 1, 10, 2)
+
+    st.markdown("### 📊 tables & font")
+    top_n = st.number_input("top terms count", 5, 10000, 20)
+    font_map, font_names = list_system_fonts(), list(list_system_fonts().keys())
+    preferred_defaults = ["cmtt10", "cmr10", "Arial", "DejaVu Sans", "Helvetica", "Verdana"]
+    default_font_index = prefer_index(font_names, preferred_defaults)
+    combined_font_name = st.selectbox("font for combined cloud", font_names or ["(default)"], max(default_font_index, 0))
+    combined_font_path = font_map.get(combined_font_name) if font_names else None
+    
+    with st.expander("⚙️ performance options", expanded=True):
+        encoding_choice = st.selectbox("file encoding", ["auto (utf-8)", "latin-1"])
+        chunksize = st.number_input("csv chunk size", 1_000, 100_000, 10_000, 1_000)
+        compute_bigrams = st.checkbox("compute bigrams / graph", value=True)
+        # New Settings for Topic Modeling
+        st.markdown("**Topic Modeling (LDA/NMF)**")
+        topic_model_type = st.selectbox("Model Type", ["LDA (Probabilistic)", "NMF (Distinct)"], index=0, help="LDA is better for long text/essays. NMF is better for short logs/chats.")
+        n_topics_val = st.slider("Number of Topics", 2, 10, 4, help="How many hidden themes to search for.")
+
+# -----------------------------
+# main processing loop (SCANNING)
+# --------------------------
+
+# --- NEW: ENTERPRISE GUIDE (For offline harvesting) ---
+with st.expander("🚀 Enterprise Workflow: Processing 10M+ Rows Locally", expanded=False):
+    st.markdown("""
+    For massive datasets that are too large to upload, use this **Offline Harvester**.
+    
+    **Instructions:**
+    1.  Copy the code below into a file named `harvest.py` on your server/laptop.
+    2.  Run it against your large CSV: `python harvest.py my_huge_file.csv`
+    3.  It will produce `my_huge_file_sketch.json`.
+    4.  Upload that JSON file here using the **"Import Pre-computed Sketch"** button in the sidebar.
+    """)
+    st.code("""
+import sys
+import csv
+import json
+import collections
+import re
+from itertools import pairwise
+
+# Minimal Harvester Script
+def simple_tokenize(text):
+    # Basic cleaning
+    text = text.lower()
+    text = re.sub(r'<[^>]+>', ' ', text) # strip html
+    text = re.sub(r'[^a-z0-9\\s]', '', text) # punct
+    return [w for w in text.split() if len(w) > 2 and not w.isdigit()]
+
+def harvest(filename):
+    print(f"Harvesting {filename}...")
+    
+    global_counts = collections.Counter()
+    global_bigrams = collections.Counter()
+    topic_docs = []
+    current_doc = collections.Counter()
+    doc_size = 0
+    total_rows = 0
+    
+    try:
+        with open(filename, 'r', encoding='utf-8', errors='replace') as f:
+            reader = csv.reader(f)
+            # Adjust column index if needed (defaulting to col 0)
+            for row in reader:
+                if not row: continue
+                text = " ".join(row) # Join all cols or pick specific one
+                tokens = simple_tokenize(text)
+                
+                if not tokens: continue
+                
+                global_counts.update(tokens)
+                if len(tokens) > 1:
+                    # Store as "word1|word2" string for JSON compatibility
+                    global_bigrams.update(f"{a}|{b}" for a, b in pairwise(tokens))
+                
+                current_doc.update(tokens)
+                doc_size += 1
+                total_rows += 1
+                
+                if doc_size >= 500: # Synthetic Doc Batch
+                    topic_docs.append(dict(current_doc))
+                    current_doc = collections.Counter()
+                    doc_size = 0
+                    if total_rows % 5000 == 0: print(f"Scanned {total_rows} rows...")
+
+            # Flush
+            if doc_size > 0: topic_docs.append(dict(current_doc))
             
-            # Simple Type handling
-            if fname.endswith('.vtt'): rows_iter = tp.read_rows_vtt(bytes_data, encoding_choice)
-            elif fname.endswith('.pdf'): rows_iter = tp.read_rows_pdf(bytes_data)
-            elif fname.endswith('.pptx'): rows_iter = tp.read_rows_pptx(bytes_data)
-            elif fname.endswith('.csv'):
-                # Check cols
-                prev = tp.get_csv_preview(bytes_data, encoding_choice)
-                if not prev.empty and len(prev.columns) > 1:
-                    with st.expander(f"Select Columns for {f.name}", expanded=True):
-                        cols = st.multiselect("Select Cols", prev.columns, prev.columns[0], key=f"c_{i}")
-                        rows_iter = tp.iter_csv_selected_columns(bytes_data, encoding_choice, ",", True, cols)
-                else: rows_iter = tp.read_rows_raw_lines(bytes_data, encoding_choice)
-            else: rows_iter = tp.read_rows_raw_lines(bytes_data, encoding_choice)
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+
+    # Output
+    out_name = filename + "_sketch.json"
+    output = {
+        "total_rows": total_rows,
+        "counts": dict(global_counts),
+        "bigrams": dict(global_bigrams),
+        "topic_docs": topic_docs
+    }
+    
+    with open(out_name, 'w') as f:
+        json.dump(output, f)
+    
+    print(f"Done! Saved to {out_name}")
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python harvest.py <filename.csv>")
+    else:
+        harvest(sys.argv[1])
+    """, language="python")
+
+
+# --- NEW: Process URLs and Manual Text into Virtual Files ---
+all_inputs = list(uploaded_files) if uploaded_files else []
+
+if url_input:
+    urls_to_scrape = [u.strip() for u in url_input.split('\n') if u.strip()]
+    if urls_to_scrape:
+        with st.status(f"Scraping {len(urls_to_scrape)} URLs...", expanded=True) as status:
+            for i, url in enumerate(urls_to_scrape):
+                st.write(f"Fetching: {url}")
+                scraped_text = fetch_url_content(url)
+                if scraped_text:
+                    safe_name = re.sub(r'[^a-zA-Z0-9]', '_', url.split('//')[-1])[:50] + ".txt"
+                    all_inputs.append(VirtualFile(safe_name, scraped_text))
+            status.update(label="Scraping Complete", state="complete", expanded=False)
+
+if manual_input:
+    all_inputs.append(VirtualFile("manual_pasted_text.txt", manual_input))
+
+if all_inputs:
+    st.subheader("🚀 Scanning Phase")
+    st.markdown("The app will now 'scan' your data. It will extract statistics into a secure sketch and discard the raw text.")
+    
+    total_files = len(all_inputs)
+
+    # 1. Configuration Pass (Select Columns)
+    # 2. Scanning Pass (Process)
+    
+    for idx, file in enumerate(all_inputs):
+        file_bytes, fname, lower = file.getvalue(), file.name, file.name.lower()
+        
+        is_csv = lower.endswith(".csv")
+        is_xlsx = lower.endswith((".xlsx", ".xlsm"))
+        is_vtt = lower.endswith(".vtt")
+        is_txt = lower.endswith(".txt")
+        is_json = lower.endswith(".json")
+        is_pdf = lower.endswith(".pdf")
+        is_pptx = lower.endswith(".pptx")
+
+        # --- input options w/ data preview-
+        with st.expander(f"🧩 Scan Configuration: {fname}", expanded=True):
+            if is_vtt: st.info("VTT transcript detected.")
+            elif is_pdf: st.info("PDF detected.")
+            elif is_pptx: st.info("PowerPoint detected.")
+            elif is_txt: st.info("Plain Text detected.")
+            elif is_csv:
+                try: inferred_cols = detect_csv_num_cols(file_bytes, encoding_choice, delimiter=",")
+                except Exception: inferred_cols = 1
+                default_mode = "csv columns" if inferred_cols > 1 else "raw lines"
+                read_mode = st.radio("read mode", ["raw lines", "csv columns"], index=0 if default_mode=="raw lines" else 1, key=f"csv_mode_{idx}")
+                delim_choice = st.selectbox("delimiter", [",", "tab", ";", "|"], 0, key=f"csv_delim_{idx}")
+                delimiter = {",": ",", "tab": "\t", ";": ";", "|": "|"}[delim_choice]
+                has_header = st.checkbox("header row", value=True if inferred_cols > 1 else False, key=f"csv_header_{idx}")
+                selected_cols, join_with = [], " "
+                
+                if read_mode == "csv columns":
+                    st.caption("🔍 Data Preview")
+                    df_prev = get_csv_preview(file_bytes, encoding_choice, delimiter, has_header)
+                    st.dataframe(df_prev, use_container_width=True, height=150)
+                    if not df_prev.empty:
+                        col_names = list(df_prev.columns)
+                        selected_cols = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"csv_cols_{idx}")
+                        join_with = st.text_input("join with", " ", key=f"csv_join_{idx}")
+            elif is_xlsx:
+                if openpyxl:
+                    sheets = get_excel_sheetnames(file_bytes)
+                    sheet_name = st.selectbox("sheet", sheets or ["(none)"], 0, key=f"xlsx_sheet_{idx}")
+                    has_header = st.checkbox("header row", True, key=f"xlsx_header_{idx}")
+                    if sheet_name:
+                        st.caption("🔍 Data Preview")
+                        df_prev = get_excel_preview(file_bytes, sheet_name, has_header)
+                        st.dataframe(df_prev, use_container_width=True, height=150)
+                        if not df_prev.empty:
+                            col_names = list(df_prev.columns)
+                            selected_cols = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"xlsx_cols_{idx}")
+                            join_with = st.text_input("join with", " ", key=f"xlsx_join_{idx}")
+
+            elif is_json:
+                st.info("JSON/JSONL File.")
+                json_key = st.text_input("Key to Extract", "", key=f"json_key_{idx}")
+
+        if st.button(f"⚡ Start Scan: {fname}", key=f"btn_scan_{idx}"):
+            container = st.container()
+            with container:
+                per_file_bar, per_file_status = st.progress(0), st.empty()
             
-            # 2. Process
-            data = process_rows_iter(
-                rows_iter, rem_chat, rem_html, True, True, False, False,
-                tuple(user_phrase_sw), tuple(user_single_sw), True, True, 2, compute_bigrams
+            rows_iter, approx_rows = iter([]), 0
+            
+            # Setup Iterator (Streaming Read)
+            if is_vtt:
+                rows_iter = read_rows_vtt(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto")
+                approx_rows = estimate_row_count_from_bytes(file_bytes)
+            elif is_pdf:
+                rows_iter = read_rows_pdf(file_bytes)
+                approx_rows = 0
+            elif is_pptx:
+                rows_iter = read_rows_pptx(file_bytes)
+                approx_rows = 0
+            elif is_txt:
+                rows_iter = read_rows_raw_lines(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto")
+                approx_rows = estimate_row_count_from_bytes(file_bytes)
+            elif is_json:
+                key_sel = locals().get('json_key', None)
+                rows_iter = read_rows_json(file_bytes, key_sel if key_sel and key_sel.strip() else None)
+                approx_rows = estimate_row_count_from_bytes(file_bytes)
+            elif is_csv:
+                rmode = locals().get('read_mode', "raw lines")
+                if rmode == "raw lines":
+                    rows_iter = read_rows_raw_lines(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto")
+                else:
+                    rows_iter = iter_csv_selected_columns(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto", delimiter, has_header, selected_cols, join_with)
+                approx_rows = estimate_row_count_from_bytes(file_bytes)
+            elif is_xlsx and openpyxl:
+                if sheet_name:
+                    rows_iter = iter_excel_selected_columns(file_bytes, sheet_name, has_header, selected_cols, join_with)
+                    approx_rows = excel_estimate_rows(file_bytes, sheet_name, has_header)
+            else:
+                rows_iter = read_rows_raw_lines(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto")
+                approx_rows = estimate_row_count_from_bytes(file_bytes)
+            
+            start_wall = time.perf_counter()
+            
+            def make_progress_cb(total_hint: int):
+                def _cb(done: int):
+                    elapsed = time.perf_counter() - start_wall
+                    if total_hint > 0:
+                        per_file_bar.progress(min(99, int(done * 100 / total_hint)))
+                        per_file_status.markdown(f"scanned rows: {done:,}/{total_hint:,} • {format_duration(elapsed)}")
+                    else:
+                        per_file_status.markdown(f"scanned rows: {done:,} • {format_duration(elapsed)}")
+                return _cb
+            
+            # The SCANNER runs here. It updates st.session_state['sketch'] in place.
+            process_chunk_iter(
+                rows_iter, remove_chat_artifacts, remove_html_tags, unescape_entities, remove_urls,
+                keep_hyphens, keep_apostrophes, tuple(user_phrase_stopwords), tuple(user_single_stopwords),
+                add_preps, drop_integers, min_word_len, compute_bigrams, st.session_state['sketch'],
+                make_progress_cb(approx_rows), idx
             )
-            combined_counts.update(data['counts'])
-            combined_bigrams.update(data['bigrams'])
-            file_results.append(data)
-            total_processed_rows += data['rows']
-            bar.progress((i+1)/len(all_inputs))
+            
+            st.session_state['sketch'].finalize() # Flush any remaining partial doc
+            per_file_bar.progress(100)
+            per_file_status.success(f"Scan Complete! Rows added to Sketch.")
+            st.rerun()
 
-
-# ------------------------------------------------
-# OUTPUT DASHBOARD
-# ------------------------------------------------
+# ----------------------------
+# ANALYSIS PHASE (Reads from Sketch)
+# ---------------------------
+scanner = st.session_state['sketch']
+combined_counts = scanner.global_counts
+combined_bigrams = scanner.global_bigrams
 
 if combined_counts:
-    # Setup Sentiment
-    term_sentiments = get_sentiments(analyzer, tuple(combined_counts.keys()))
-    col_func = create_color_func(term_sentiments, '#2ca02c', '#d62728', '#808080', pos_th, neg_th) if enable_sent else None
-
     st.divider()
-
-    # 1. TOPIC MODELING
-    st.subheader("🔍 Theme Discovery")
-    topics = pre_calc_topics
-    if not topics and file_results and DictVectorizer:
-         # On-the-fly for standard mode
-         m_type = "LDA" if "LDA" in topic_model_type else "NMF"
-         with st.spinner(f"Running {m_type}..."):
-             topics = tp.perform_topic_modeling([r['counts'] for r in file_results], n_topics, 6, m_type)
-
-    if topics:
-        cols = st.columns(len(topics))
-        for idx, t in enumerate(topics):
-            with cols[idx]:
-                st.markdown(f"**Topic {t['id']}**")
-                for w in t['words']: st.markdown(f"`{w}`")
-    else: st.caption("No topics detected (require >1 doc or enabled setting).")
-
-    # 2. WORD CLOUD
-    st.divider()
-    st.subheader("🖼️ Word Cloud")
-    fig, wc = build_wordcloud(combined_counts, max_words, width, height, bg_color, colormap, None, 42, col_func)
-    st.pyplot(fig, use_container_width=True)
-    st.download_button("Download PNG", fig_to_png(fig), "cloud.png", "image/png")
-
-    # 3. STATS & BAYES
-    st.divider()
-    text_stats = calculate_text_stats(combined_counts, total_processed_rows)
+    st.header("📊 Analysis Phase")
     
-    st.subheader("📊 Analytics")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Rows", f"{text_stats['Total Rows']:,}")
-    c2.metric("Tokens", f"{text_stats['Total Tokens']:,}")
-    c3.metric("Vocab", f"{text_stats['Unique Vocabulary']:,}")
-    c4.metric("Avg Len", f"{text_stats['Avg Word Length']}")
+    # NEW: SKETCH EXPORT
+    st.download_button(
+        label="💾 Download Sketch (.json) for later",
+        data=scanner.to_json(),
+        file_name="data_sketch.json",
+        mime="application/json",
+        help="Save this sketch to skip scanning next time."
+    )
+    
+    st.info(f"Analyzing Sketch of {scanner.total_rows_processed:,} total rows.")
+    
+    term_sentiments = {}
+    if enable_sentiment:
+        term_sentiments = get_sentiments(analyzer, tuple(combined_counts.keys()))
+        if compute_bigrams:
+            bigram_phrases = tuple(" ".join(bg) for bg in combined_bigrams.keys())
+            term_sentiments.update(get_sentiments(analyzer, bigram_phrases))
 
-    if enable_sent and beta_dist:
-        st.caption("Bayesian Sentiment Analysis (Beta-Binomial)")
-        bres = perform_bayesian_sentiment(combined_counts, term_sentiments, pos_th, neg_th, pre_calc_pos, pre_calc_neg)
-        if bres:
-             bc1, bc2 = st.columns([1, 2])
-             bc1.success(f"95% Conf: {bres['lo']:.1%} - {bres['hi']:.1%}")
-             bc1.metric("Positive Terms", f"{bres['pos']:,}")
-             fig_b, ax_b = plt.subplots(figsize=(6, 2))
-             ax_b.plot(bres['x'], bres['y'], color='blue', label='Posterior')
-             ax_b.fill_between(bres['x'], 0, bres['y'], where=(bres['x']>bres['lo'])&(bres['x']<bres['hi']), color='green', alpha=0.3)
-             ax_b.legend(); ax_b.set_title("Probability of Positive Sentiment")
-             bc2.pyplot(fig_b)
+    st.subheader("🔍 Bayesian Theme Discovery")
+    # Extract model type from sidebar selection string
+    selected_model_type = "LDA" if "LDA" in topic_model_type else "NMF"
+    
+    with st.expander(f"🤔 How this works ({selected_model_type})", expanded=False):
+        st.markdown(f"Using **{len(scanner.topic_docs)} synthetic documents** created during the scan.")
+    
+    if len(scanner.topic_docs) > 0 and DictVectorizer:
+        with st.spinner(f"Running {selected_model_type} Topic Modeling on Sketch..."):
+            topics = perform_topic_modeling(scanner.topic_docs, n_topics=n_topics_val, model_type=selected_model_type)
+        
+        if topics:
+            cols = st.columns(len(topics))
+            for idx, topic in enumerate(topics):
+                with cols[idx]:
+                    st.markdown(f"**Topic {topic['id']}**")
+                    for w in topic['words']:
+                        st.markdown(f"`{w}`")
+        else:
+            st.warning("Not enough distinct data to detect topics.")
+    
+    st.divider()
 
-    # 4. NETWORK GRAPH
-    if compute_bigrams and combined_bigrams:
+    st.subheader("🖼️ Combined Word Cloud")
+    try:
+        c_color_func = None
+        if enable_sentiment: c_color_func = create_sentiment_color_func(term_sentiments, pos_color, neg_color, neu_color, pos_threshold, neg_threshold)
+        fig, _ = build_wordcloud_figure_from_counts(combined_counts, max_words, width, height, bg_color, colormap, combined_font_path, random_state, c_color_func)
+        st.pyplot(fig, use_container_width=True)
+        st.download_button("📥 download combined png", fig_to_png_bytes(fig), "combined_wc.png", "image/png")
+        plt.close(fig); gc.collect()
+    except MemoryError: st.error("memory error: reduce image size.")
+
+    st.divider()
+    
+    text_stats = calculate_text_stats(combined_counts, scanner.total_rows_processed)
+
+    show_graph = compute_bigrams and combined_bigrams and st.checkbox("🕸️ Show Network Graph & Advanced Analytics", value=True)
+    
+    # --- Bayesian Sentiment Inference
+    if enable_sentiment and beta_dist:
+        st.subheader("⚖️ Bayesian Sentiment Inference")
+        bayes_result = perform_bayesian_sentiment_analysis(combined_counts, term_sentiments, pos_threshold, neg_threshold)
+        if bayes_result:
+            b_col1, b_col2 = st.columns([1, 2])
+            with b_col1:
+                st.metric("Positive Words Observed", f"{bayes_result['pos_count']:,}")
+                st.metric("Negative Words Observed", f"{bayes_result['neg_count']:,}")
+                st.info(f"Mean Expected Positive Rate: **{bayes_result['mean_prob']:.1%}**")
+                st.success(f"95% Credible Interval:\n**{bayes_result['ci_low']:.1%} — {bayes_result['ci_high']:.1%}**")
+            with b_col2:
+                fig_bayes, ax_bayes = plt.subplots(figsize=(8, 4))
+                ax_bayes.plot(bayes_result['x_axis'], bayes_result['pdf_y'], lw=2, color='blue', label='Posterior PDF')
+                ax_bayes.fill_between(bayes_result['x_axis'], 0, bayes_result['pdf_y'], 
+                                    where=(bayes_result['x_axis'] > bayes_result['ci_low']) & (bayes_result['x_axis'] < bayes_result['ci_high']),
+                                    color='green', alpha=0.3, label='95% Credible Interval')
+                ax_bayes.set_title("Bayesian Update of Sentiment Confidence", fontsize=10)
+                ax_bayes.legend()
+                ax_bayes.grid(True, alpha=0.2)
+                st.pyplot(fig_bayes)
+                plt.close(fig_bayes)
         st.divider()
-        st.subheader("🕸️ Network Graph")
+
+    if show_graph:
+        st.subheader("🔗 Network Graph & Analytics")
+        # 1. graphing config/'physics'
+        with st.expander("🛠️ Graph Settings & Physics", expanded=False):
+            c1, c2, c3 = st.columns(3)
+            min_edge_weight = c1.slider("Min Link Frequency", 2, 100, 5)
+            max_nodes_graph = c1.slider("Max Nodes", 10, 200, 80)
+            repulsion_val = c2.slider("Repulsion", 100, 3000, 1000)
+            edge_len_val = c2.slider("Edge Length", 50, 500, 250)
+            physics_enabled = c3.checkbox("Enable Physics", True)
+            directed_graph = c3.checkbox("Directed Arrows", False)
+            color_mode = c3.radio("Color By:", ["Community (Topic)", "Sentiment"], index=0)
+
+        # 2. build graph
+        G = nx.DiGraph() if directed_graph else nx.Graph()
+        filtered_bigrams = {k: v for k, v in combined_bigrams.items() if v >= min_edge_weight}
+        sorted_connections = sorted(filtered_bigrams.items(), key=lambda x: x[1], reverse=True)[:max_nodes_graph]
         
-        # Tabs for graph details
-        g_tab1, g_tab2, g_tab3 = st.tabs(["Graph Viz", "Centrality", "Data"])
-        
-        # Build Graph
-        G = nx.Graph()
-        # Filter edges for performance
-        sorted_edges = combined_bigrams.most_common(1000)
-        min_w = 2 if len(sorted_edges) < 100 else 5
-        
-        for (u, v), w in sorted_edges:
-            if w >= min_w: G.add_edge(u, v, weight=w)
+        if sorted_connections:
+            for (source, target), weight in sorted_connections: G.add_edge(source, target, weight=weight)
+            try: deg_centrality = nx.degree_centrality(G)
+            except: deg_centrality = {n: 1 for n in G.nodes()}
+            community_map = {}
+            ai_cluster_info = "" 
             
-        # 4a. Viz
-        with g_tab1:
-            if G.number_of_nodes() > 0:
-                # Physics Settings
-                with st.expander("Physics"):
-                    sep = st.slider("Separation", 100, 1000, 500)
-                    
-                # Communities
-                comm_map = {}
+            if color_mode == "Community (Topic)":
+                G_undir = G.to_undirected() if directed_graph else G
                 try:
-                    for i, c in enumerate(nx_comm.greedy_modularity_communities(G)):
-                         for n in c: comm_map[n] = i
+                    communities = nx_comm.greedy_modularity_communities(G_undir)
+                    cluster_descriptions = []
+                    for group_id, community in enumerate(communities):
+                        top_in_cluster = sorted(list(community), key=lambda x: combined_counts[x], reverse=True)[:5]
+                        cluster_descriptions.append(f"- Cluster {group_id+1}: {', '.join(top_in_cluster)}")
+                        for node in community: community_map[node] = group_id
+                    ai_cluster_info = "\n".join(cluster_descriptions)
+                except Exception as e: pass
+
+            community_colors = ["#FF4B4B", "#4589ff", "#ffa421", "#3cdb82", "#8b46ff", "#ff4b9f", "#00c0f2"]
+            nodes, edges = [], []
+            for node_id in G.nodes():
+                size = 15 + (deg_centrality.get(node_id, 0) * 80)
+                if color_mode == "Sentiment":
+                    node_color = neu_color
+                    if enable_sentiment:
+                        score = term_sentiments.get(node_id, 0)
+                        if score >= pos_threshold: node_color = pos_color
+                        elif score <= neg_threshold: node_color = neg_color
+                else:
+                    group_id = community_map.get(node_id, 0)
+                    node_color = community_colors[group_id % len(community_colors)]
+
+                nodes.append(Node(id=node_id, label=node_id, size=size, color=node_color, title=f"Term: {node_id}\nFreq: {combined_counts.get(node_id, 0)}", font={'color': 'white', 'size': 20, 'strokeWidth': 4, 'strokeColor': '#000000'}))
+
+            for (source, target), weight in sorted_connections:
+                width = 1 + math.log(weight) * 0.8
+                edges.append(Edge(source=source, target=target, width=width, color="#e0e0e0"))
+            
+            config = Config(width=1000, height=700, directed=directed_graph, physics=physics_enabled, hierarchy=False, interaction={"navigationButtons": True, "zoomView": True}, physicsSettings={"solver": "forceAtlas2Based", "forceAtlas2Based": {"gravitationalConstant": -abs(repulsion_val), "springLength": edge_len_val, "springConstant": 0.05, "damping": 0.4}})
+            st.info("💡 **Navigation Tip:** Use the buttons in the **bottom-right** of the graph to Zoom & Pan.")
+            agraph(nodes=nodes, edges=edges, config=config)
+
+            st.markdown("### 📊 Graph Analytics")
+            tab1, tab2, tab5 = st.tabs(["Basic Stats", "Top Nodes", "Text Stats"])
+            with tab1:
+                col_b1, col_b2, col_b3 = st.columns(3)
+                col_b1.metric("Nodes", G.number_of_nodes())
+                col_b2.metric("Edges", G.number_of_edges())
+                try: col_b3.metric("Density", f"{nx.density(G):.4f}")
                 except: pass
+            with tab2:
+                node_weights = {n: 0 for n in G.nodes()}
+                for u, v, data in G.edges(data=True):
+                    w = data.get('weight', 1)
+                    node_weights[u] += w
+                    node_weights[v] += w
+                st.dataframe(pd.DataFrame(list(node_weights.items()), columns=["Node", "Weighted Degree"]).sort_values("Weighted Degree", ascending=False).head(50), use_container_width=True)
+            with tab5:
+                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+                col_s1.metric("Total Tokens", f"{text_stats['Total Tokens']:,}")
+                col_s2.metric("Unique Vocab", f"{text_stats['Unique Vocabulary']:,}")
+                col_s3.metric("Lexical Diversity", f"{text_stats['Lexical Diversity']}")
+                col_s4.metric("Avg Word Len", f"{text_stats['Avg Word Length']}")
                 
-                nodes, edges = [], []
-                colors = ["#ff4b4b", "#4589ff", "#ffa421", "#3cdb82"]
-                
-                # Metrics for sizing
-                deg = nx.degree_centrality(G)
-                
-                for n in G.nodes():
-                    sz = 10 + (deg.get(n, 0) * 50)
-                    c_grp = colors[comm_map.get(n, 0) % len(colors)]
-                    nodes.append(Node(id=n, label=n, size=sz, color=c_grp))
-                    
-                for u, v, d in G.edges(data=True):
-                    edges.append(Edge(source=u, target=v, color="#ddd", width=1))
-                    
-                agraph(nodes, edges, Config(width=900, height=600, physics=True, physicsSettings={"forceAtlas2Based": {"gravitationalConstant": -sep}}))
-                
-        # 4b. Centrality
-        with g_tab2:
-            if G.number_of_nodes() > 0:
-                dc = nx.degree_centrality(G)
-                bc = nx.betweenness_centrality(G, weight='weight')
-                df_cent = pd.DataFrame([{"Node": n, "Degree": dc[n], "Betweenness": bc[n]} for n in G.nodes()])
-                st.dataframe(df_cent.sort_values("Degree", ascending=False).head(50), use_container_width=True)
+    else:
+        st.subheader("📈 Text Statistics")
+        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+        col_s1.metric("Total Tokens", f"{text_stats['Total Tokens']:,}")
+        col_s2.metric("Unique Vocab", f"{text_stats['Unique Vocabulary']:,}")
+        col_s3.metric("Lexical Diversity", f"{text_stats['Lexical Diversity']}")
+        col_s4.metric("Avg Word Len", f"{text_stats['Avg Word Length']}")
 
-        # 4c. Data
-        with g_tab3:
-            st.dataframe(pd.DataFrame(sorted_edges, columns=["Bigram", "Weight"]).head(500), use_container_width=True)
+else: 
+    st.info("Uploaded data will be processed into the sketch above.")
 
-    # 5. AI INSIGHTS
-    if st.session_state['authenticated']:
-        st.divider()
-        st.subheader("🤖 AI Insights")
-        if st.button("Generate Insights"):
-            with st.spinner("Analyzing..."):
-                g_ctx = str(comm_map) if 'comm_map' in locals() else "No graph"
-                resp = generate_ai_insights(combined_counts, combined_bigrams, ai_conf, g_ctx)
-                st.session_state['ai_response'] = resp
-        
-        if st.session_state['ai_response']:
-            st.markdown(st.session_state['ai_response'])
 
-    # 6. DOWNLOAD SKETCH (If Streaming Mode)
-    if input_mode == "Streaming (Large Files)":
-        st.divider()
-        st.info("Save this analysis to avoid re-streaming later.")
-        sketch = {
-            "word_counter": combined_counts,
-            "bigram_counter": combined_bigrams,
-            "total_rows": total_processed_rows,
-            "pos_count": pre_calc_pos,
-            "neg_count": pre_calc_neg
-            # (Can add LDA model if picklable, usually large though)
-        }
-        b = BytesIO()
-        joblib.dump(sketch, b)
-        st.download_button("Download .pkl Sketch", b, "analysis.pkl")
+# --- ai analytics section
+if combined_counts and st.session_state['authenticated']:
+    st.divider()
+    st.subheader("🤖 AI Theme Detection")
+    st.caption("Send the top 100 terms from the Sketch to the AI.")
 
-else:
-    # --- EMPTY STATE / GETTING STARTED GUIDE ---
-    st.info("👋 **Welcome!** Select an **Input Mode** in the sidebar to begin.")
+    if st.button("✨ Analyze Themes with AI", type="primary"):
+        with st.status("Analyzing top terms...", expanded=True) as status:
+            g_context = locals().get("ai_cluster_info", "(Graph clustering not run)")
+            response = generate_ai_insights(combined_counts, combined_bigrams if compute_bigrams else None, ai_config, g_context)
+            st.session_state["ai_response"] = response
+            status.update(label="Analysis Complete", state="complete", expanded=False)
+            time.sleep(1.5) 
+        st.rerun()
+
+    if st.session_state.get("ai_response"):
+        st.write(st.session_state["ai_response"])
+
+
+if st.session_state['ai_response']:
+    st.markdown("### 📋 AI Insights")
+    st.markdown(st.session_state['ai_response'])
+    st.divider()
+
+# ---tables
+if combined_counts:
+    st.divider()
+    st.subheader(f"📊 Frequency Tables (Top {top_n})")
+    most_common = combined_counts.most_common(top_n)
+    data = [[w, f] + ([term_sentiments.get(w,0), get_sentiment_category(term_sentiments.get(w,0), pos_threshold, neg_threshold)] if enable_sentiment else []) for w, f in most_common]
+    cols = ["word", "count"] + (["sentiment", "category"] if enable_sentiment else [])
+    st.dataframe(pd.DataFrame(data, columns=cols), use_container_width=True)
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("### 1. Standard")
-        st.caption("For everyday files.")
-        st.markdown("Drag & drop CSVs, Excel, PDFs, or Paste Text.")
-    with col2:
-        st.markdown("### 2. Streaming")
-        st.caption("For massive datasets.")
-        st.markdown("Analyzes 100MB+ files in chunks without crashing.")
-    with col3:
-        st.markdown("### 3. Sketch")
-        st.caption("For instant replay.")
-        st.markdown("Reload a previously saved analysis.")
+    if compute_bigrams and combined_bigrams:
+        st.write("Bigrams")
+        top_bg = combined_bigrams.most_common(top_n)
+        bg_data = [[" ".join(bg), f] + ([term_sentiments.get(" ".join(bg),0), get_sentiment_category(term_sentiments.get(" ".join(bg),0), pos_threshold, neg_threshold)] if enable_sentiment else []) for bg, f in top_bg]
+        bg_cols = ["bigram", "count"] + (["sentiment", "category"] if enable_sentiment else [])
+        st.dataframe(pd.DataFrame(bg_data, columns=bg_cols), use_container_width=True)
