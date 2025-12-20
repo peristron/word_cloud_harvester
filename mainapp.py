@@ -826,6 +826,40 @@ analyzer = setup_sentiment_analyzer()
 
 # --- side-bar start-
 with st.sidebar:
+    st.header("📂 Data Input")
+    
+    # 1. Main File Uploader (Top)
+    st.info("Performance Tip: Streaming allows files up to ~1GB")
+    uploaded_files = st.file_uploader(
+        "Upload Files (csv, xlsx, json, txt, vtt, pdf, pptx)",
+        type=["csv", "xlsx", "xlsm", "vtt", "txt", "json", "pdf", "pptx"],
+        accept_multiple_files=True
+    )
+    
+    clear_on_scan = st.checkbox("Clear previous data before scanning", value=True, help="If checked, scanning new files will wipe old results. If unchecked, new files are ADDED to the current analysis.")
+    
+    if st.button("🗑️ Reset All Data", type="primary"):
+        reset_sketch()
+        st.rerun()
+
+    st.divider()
+
+    # 2. Secondary Inputs
+    with st.expander("🌐 Web, Manual & Sketch Import", expanded=False):
+        sketch_upload = st.file_uploader("📂 Import Pre-computed Sketch (.json)", type=["json"], help="Skip processing by uploading a saved sketch.")
+        if sketch_upload:
+            if st.session_state['sketch'].load_from_json(sketch_upload.getvalue().decode('utf-8')):
+                st.success("Sketch Loaded Successfully!")
+            else:
+                st.error("Invalid Sketch File")
+        
+        st.markdown("---")
+        url_input = st.text_area("Enter URLs (one per line)", height=100, help="Scrape visible text.")
+        manual_input = st.text_area("Paste text manually", height=150)
+
+    st.divider()
+
+    # 3. AI Setup
     st.header("🔐 AI Setup")
     if st.session_state['authenticated']:
         st.success("AI Features Unlocked")
@@ -886,35 +920,6 @@ with st.sidebar:
             if st.session_state['auth_error']: st.error("Incorrect password.")
 
     st.divider()
-    
-    # --- NEW: Sketch Import + Raw Input ---
-    st.markdown("### 🌐 Web & Files")
-    
-    # NEW: SKETCH IMPORTER
-    sketch_upload = st.file_uploader("📂 Import Pre-computed Sketch (.json)", type=["json"], help="Skip processing by uploading a saved sketch.")
-    if sketch_upload:
-        if st.session_state['sketch'].load_from_json(sketch_upload.getvalue().decode('utf-8')):
-            st.success("Sketch Loaded Successfully!")
-        else:
-            st.error("Invalid Sketch File")
-
-    st.markdown("---")
-    
-    url_input = st.text_area("enter urls (one per line)", height=100, help="The app will scrape the visible text from these pages.")
-    manual_input = st.text_area("paste text manually", height=150, help="Copy text from non-public sites and paste here.")
-    
-    st.info("Performance Tip: Streaming allows files up to ~1GB")
-    uploaded_files = st.file_uploader(
-        "upload files (csv, xlsx, json, txt, vtt, pdf, pptx)",
-        type=["csv", "xlsx", "xlsm", "vtt", "txt", "json", "pdf", "pptx"],
-        accept_multiple_files=True
-    )
-    
-    clear_on_scan = st.checkbox("Clear previous data before scanning", value=True, help="If checked, scanning new files will wipe old results. If unchecked, new files are ADDED to the current analysis.")
-    
-    if st.button("🗑️ Reset All Data", type="primary"):
-        reset_sketch()
-        st.rerun()
 
     st.markdown("### 🎨 appearance")
     bg_color = st.color_picker("background color", value="#ffffff")
