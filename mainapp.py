@@ -1,7 +1,8 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
-#  Architecture: Hybrid Streaming (Per-File Viz + Global Sketch)
+#  Architecture: Hybrid Streaming + "Data Refinery" Utility
 #
 import io
+import os
 import re
 import html
 import gc
@@ -10,6 +11,9 @@ import csv
 import json
 import math
 import string
+import zipfile
+import tempfile
+import shutil
 import numpy as np
 from collections import Counter
 from typing import Dict, List, Tuple, Iterable, Optional, Callable, Any
@@ -90,10 +94,6 @@ CHAT_ARTIFACT_RE = re.compile(
 # ---------------------------
 
 class StreamScanner:
-    """
-    Acts as the repository for 'extracted information' (the Sketch).
-    It accumulates statistical data while discarding raw text.
-    """
     def __init__(self):
         self.global_counts = Counter()
         self.global_bigrams = Counter()
@@ -108,7 +108,6 @@ class StreamScanner:
         self.global_bigrams.update(chunk_bigrams)
         self.total_rows_processed += row_count
         
-        # Topic Modeling aggregation
         self.current_doc_accum.update(chunk_counts)
         self.doc_accum_size += row_count
         
@@ -530,6 +529,78 @@ def process_chunk_iter(
     gc.collect()
 
 # --
+# refinery logic (Clean & Split)
+# --
+def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_html_tags, unescape_entities, remove_urls, keep_hyphens, keep_apostrophes):
+    """
+    Reads a CSV file, applies cleaning to the text columns, saves to temp chunks, and ZIPs them.
+    """
+    # 1. Setup cleaning tools
+    _remove_chat = remove_chat_artifacts
+    _remove_html = remove_html_tags
+    _unescape = unescape_entities
+    _remove_urls = remove_urls
+    _is_url = is_url_token # Reuse from main
+    _trans = build_punct_translation(keep_hyphens, keep_apostrophes)
+    
+    # 2. Process
+    with tempfile.TemporaryDirectory() as temp_dir:
+        original_name = os.path.splitext(file_obj.name)[0]
+        status_container = st.status(f"⚙️ Refining {file_obj.name}...", expanded=True)
+        part_num = 1
+        created_files = []
+        
+        try:
+            file_obj.seek(0)
+            # We assume CSV for the "Splitter" logic usually, as it handles structured data best.
+            # Reading with pandas for robust chunking
+            df_iterator = pd.read_csv(file_obj, chunksize=chunk_size, on_bad_lines='skip', dtype=str)
+            
+            for chunk in df_iterator:
+                # Apply cleaning to ALL string columns
+                for col in chunk.columns:
+                    chunk[col] = chunk[col].fillna("")
+                    
+                    # Apply cleaning lambda
+                    def clean_cell(text):
+                        if not isinstance(text, str): return str(text)
+                        if _remove_chat: text = CHAT_ARTIFACT_RE.sub(" ", text)
+                        if _remove_html: text = HTML_TAG_RE.sub(" ", text)
+                        if _unescape: 
+                            try: text = html.unescape(text)
+                            except: pass
+                        if _remove_urls: 
+                            # Simple removal of URL-like tokens
+                            text = " ".join([t for t in text.split() if not _is_url(t)])
+                        return text.strip()
+
+                    chunk[col] = chunk[col].apply(clean_cell)
+                
+                # Save chunk
+                new_filename = f"{original_name}_cleaned_part_{part_num}.csv"
+                temp_path = os.path.join(temp_dir, new_filename)
+                chunk.to_csv(temp_path, index=False)
+                created_files.append(temp_path)
+                status_container.write(f"✅ Processed chunk {part_num} ({len(chunk)} rows)")
+                part_num += 1
+            
+            # Zip
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for file_path in created_files:
+                    zip_file.write(file_path, arcname=os.path.basename(file_path))
+            
+            zip_buffer.seek(0)
+            status_container.update(label="🎉 Refinery Job Complete!", state="complete", expanded=False)
+            
+            return zip_buffer
+            
+        except Exception as e:
+            status_container.update(label="❌ Error", state="error")
+            st.error(f"Refinery Error: {str(e)}")
+            return None
+
+# --
 # stats/ analytics helpers
 #-
 
@@ -696,7 +767,7 @@ with st.expander("📘 App Guide (Architecture & Features)", expanded=False):
     
     *   **Small Files:** You can see visualizations for each file individually before they are merged.
     *   **Large Data:** Files are read in chunks, stats are extracted into a 'Sketch', and raw text is discarded (Ephemeral Processing).
-    *   **Enterprise Mode:** Run the offline harvester script for massive datasets and import the JSON sketch here.
+    *   **Data Refinery:** Use the utility below to clean and split massive files into manageable CSVs.
     """)
 
 st.warning("""
@@ -852,6 +923,33 @@ with st.sidebar:
         st.markdown("**Topic Modeling (LDA/NMF)**")
         topic_model_type = st.selectbox("Model Type", ["LDA (Probabilistic)", "NMF (Distinct)"], index=0, help="LDA is better for long text/essays. NMF is better for short logs/chats.")
         n_topics_val = st.slider("Number of Topics", 2, 10, 4, help="How many hidden themes to search for.")
+
+# -----------------------------
+# NEW: DATA REFINERY (UTILITY SECTION)
+# --------------------------
+with st.expander("🛠️ Data Refinery: Split & Clean Massive CSVs", expanded=False):
+    st.markdown("""
+    **The Refinery** is a utility for data engineering. It creates CLEANED copies of your files.
+    1. Upload a CSV (even a large one).
+    2. The app reads it in chunks, applies your cleaning settings (removing HTML, timestamps, etc.).
+    3. It splits the file into smaller parts and returns a ZIP file.
+    """)
+    refinery_file = st.file_uploader("Upload CSV to Refine:", type=['csv'])
+    r_rows = st.number_input("Rows per split file:", 1000, 500000, 50000)
+    
+    if refinery_file and st.button("🚀 Start Refinery Job"):
+        zip_data = perform_refinery_job(
+            refinery_file, r_rows, 
+            remove_chat_artifacts, remove_html_tags, unescape_entities, remove_urls, keep_hyphens, keep_apostrophes
+        )
+        if zip_data:
+            st.download_button(
+                label="📥 Download Cleaned & Split ZIP",
+                data=zip_data,
+                file_name=f"{os.path.splitext(refinery_file.name)[0]}_refined.zip",
+                mime="application/zip",
+                type="primary"
+            )
 
 # -----------------------------
 # main processing loop (SCANNING)
