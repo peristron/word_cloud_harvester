@@ -1489,3 +1489,10 @@ if combined_counts:
         bg_data = [[" ".join(bg), f] + ([term_sentiments.get(" ".join(bg),0), get_sentiment_category(term_sentiments.get(" ".join(bg),0), pos_threshold, neg_threshold)] if enable_sentiment else []) for bg, f in top_bg]
         bg_cols = ["bigram", "count"] + (["sentiment", "category"] if enable_sentiment else [])
         st.dataframe(pd.DataFrame(bg_data, columns=bg_cols), use_container_width=True)
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: #808080; font-size: 12px;'>"
+    "open Source software licensed under the MIT License"
+    "</div>", 
+    unsafe_allow_html=True
+)
