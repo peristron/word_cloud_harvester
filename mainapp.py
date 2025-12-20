@@ -1,5 +1,5 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
-#  Architecture: Hybrid (Streaming In-Browser + Offline Sketch Import)
+#  Architecture: Hybrid Streaming (Per-File Viz + Global Sketch)
 #
 import io
 import re
@@ -93,7 +93,6 @@ class StreamScanner:
     """
     Acts as the repository for 'extracted information' (the Sketch).
     It accumulates statistical data while discarding raw text.
-    It can also Export to JSON and Import from JSON.
     """
     def __init__(self):
         self.global_counts = Counter()
@@ -109,6 +108,7 @@ class StreamScanner:
         self.global_bigrams.update(chunk_bigrams)
         self.total_rows_processed += row_count
         
+        # Topic Modeling aggregation
         self.current_doc_accum.update(chunk_counts)
         self.doc_accum_size += row_count
         
@@ -124,10 +124,7 @@ class StreamScanner:
             self.doc_accum_size = 0
 
     def to_json(self) -> str:
-        """Serializes the sketch to a JSON string."""
-        # Convert bigram tuples ('a','b') to string "a|b" for JSON compatibility
         serializable_bigrams = {f"{k[0]}|{k[1]}": v for k, v in self.global_bigrams.items()}
-        
         data = {
             "total_rows": self.total_rows_processed,
             "counts": dict(self.global_counts),
@@ -137,24 +134,19 @@ class StreamScanner:
         return json.dumps(data)
 
     def load_from_json(self, json_str: str):
-        """Hydrates the sketch from a JSON string."""
         try:
             data = json.loads(json_str)
             self.total_rows_processed = data.get("total_rows", 0)
             self.global_counts = Counter(data.get("counts", {}))
-            
-            # Convert "a|b" strings back to ('a','b') tuples
             raw_bigrams = data.get("bigrams", {})
             self.global_bigrams = Counter()
             for k, v in raw_bigrams.items():
                 if "|" in k:
                     parts = k.split("|", 1)
                     self.global_bigrams[(parts[0], parts[1])] = v
-            
             self.topic_docs = [Counter(d) for d in data.get("topic_docs", [])]
             return True
         except Exception as e:
-            print(f"Error loading sketch: {e}")
             return False
 
 # Initialize Session State
@@ -487,7 +479,8 @@ def process_chunk_iter(
     user_phrase_stopwords: Tuple[str, ...], user_single_stopwords: Tuple[str, ...],
     add_preps: bool, drop_integers: bool, min_word_len: int,
     compute_bigrams: bool, scanner: StreamScanner,
-    progress_cb: Optional[Callable[[int], None]] = None, chunk_idx: int = 0
+    progress_cb: Optional[Callable[[int], None]] = None, 
+    temp_file_stats: Optional[Counter] = None # NEW: For per-file visualization
 ):
     stopwords = set(STOPWORDS)
     stopwords.update(user_single_stopwords)
@@ -524,6 +517,10 @@ def process_chunk_iter(
             if compute_bigrams and len(filtered_tokens_line) > 1:
                 local_bigrams.update(tuple(bg) for bg in pairwise(filtered_tokens_line))
         if progress_cb and (row_count % 2000 == 0): progress_cb(row_count)
+
+    # NEW: Capture stats for the single file before merging
+    if temp_file_stats is not None:
+        temp_file_stats.update(local_counts)
 
     scanner.ingest_chunk_stats(local_counts, local_bigrams, row_count)
     if progress_cb: progress_cb(row_count)
@@ -695,12 +692,11 @@ st.title("🧠 Multi-File Word Cloud & Graph Analyzer")
 with st.expander("📘 App Guide (Architecture & Features)", expanded=False):
     st.markdown("""
     **The Unstructured Data Intel Engine**  
-    This app uses a **Streaming Sketch Architecture** to handle massive datasets securely.
+    This app uses a **Hybrid Sketch Architecture**.
     
-    1.  **Scanning (The 'Harvester'):** Files are read in chunks. Raw text is processed into a statistical 'Sketch' and immediately discarded from memory (Ephemeral Processing).
-    2.  **The Sketch:** A lightweight summary containing word counts, network edges, and synthetic document vectors.
-    3.  **Bayesian Models:** We apply LDA (Probabilistic) or NMF (Linear) to the sketch to discover hidden themes.
-    4.  **Generative AI:** The sketch summary is sent to the AI to write the final qualitative report.
+    *   **Small Files:** You can see visualizations for each file individually before they are merged.
+    *   **Large Data:** Files are read in chunks, stats are extracted into a 'Sketch', and raw text is discarded (Ephemeral Processing).
+    *   **Enterprise Mode:** Run the offline harvester script for massive datasets and import the JSON sketch here.
     """)
 
 st.warning("""
@@ -795,6 +791,8 @@ with st.sidebar:
         type=["csv", "xlsx", "xlsm", "vtt", "txt", "json", "pdf", "pptx"],
         accept_multiple_files=True
     )
+    
+    clear_on_scan = st.checkbox("Clear previous data before scanning", value=True, help="If checked, scanning new files will wipe old results. If unchecked, new files are ADDED to the current analysis.")
     
     if st.button("🗑️ Reset All Data", type="primary"):
         reset_sketch()
@@ -971,13 +969,10 @@ if manual_input:
 
 if all_inputs:
     st.subheader("🚀 Scanning Phase")
-    st.markdown("The app will now 'scan' your data. It will extract statistics into a secure sketch and discard the raw text.")
+    st.markdown("Configure how to read your files. Click 'Start Scan' to process them.")
     
     total_files = len(all_inputs)
 
-    # 1. Configuration Pass (Select Columns)
-    # 2. Scanning Pass (Process)
-    
     for idx, file in enumerate(all_inputs):
         file_bytes, fname, lower = file.getvalue(), file.name, file.name.lower()
         
@@ -1032,6 +1027,9 @@ if all_inputs:
                 json_key = st.text_input("Key to Extract", "", key=f"json_key_{idx}")
 
         if st.button(f"⚡ Start Scan: {fname}", key=f"btn_scan_{idx}"):
+            if clear_on_scan:
+                reset_sketch() # Standard behavior: New Scan = New Analysis
+                
             container = st.container()
             with container:
                 per_file_bar, per_file_status = st.progress(0), st.empty()
@@ -1082,18 +1080,38 @@ if all_inputs:
                         per_file_status.markdown(f"scanned rows: {done:,} • {format_duration(elapsed)}")
                 return _cb
             
-            # The SCANNER runs here. It updates st.session_state['sketch'] in place.
+            # --- HYBRID VISUALIZATION LOGIC ---
+            # We create a temp counter for THIS file only
+            file_specific_stats = Counter()
+            
+            # Run scanner (updates st.session_state['sketch'] AND file_specific_stats)
             process_chunk_iter(
                 rows_iter, remove_chat_artifacts, remove_html_tags, unescape_entities, remove_urls,
                 keep_hyphens, keep_apostrophes, tuple(user_phrase_stopwords), tuple(user_single_stopwords),
                 add_preps, drop_integers, min_word_len, compute_bigrams, st.session_state['sketch'],
-                make_progress_cb(approx_rows), idx
+                make_progress_cb(approx_rows), temp_file_stats=file_specific_stats
             )
             
-            st.session_state['sketch'].finalize() # Flush any remaining partial doc
+            st.session_state['sketch'].finalize()
             per_file_bar.progress(100)
             per_file_status.success(f"Scan Complete! Rows added to Sketch.")
-            st.rerun()
+            
+            # RENDER IMMEDIATE FEEDBACK (Small File Mode)
+            if file_specific_stats:
+                st.markdown("##### 📄 Quick View: This File")
+                color_func = None
+                if enable_sentiment:
+                    sentiments = get_sentiments(analyzer, tuple(file_specific_stats.keys()))
+                    color_func = create_sentiment_color_func(sentiments, pos_color, neg_color, neu_color, pos_threshold, neg_threshold)
+                
+                fig, _ = build_wordcloud_figure_from_counts(file_specific_stats, max_words, width, height, bg_color, colormap, combined_font_path, random_state, color_func)
+                col1, col2 = st.columns([3, 1])
+                with col1: st.pyplot(fig, use_container_width=True)
+                with col2: st.download_button(f"📥 download png", fig_to_png_bytes(fig), f"{fname}_wc.png", "image/png")
+                plt.close(fig); del file_specific_stats; gc.collect()
+            
+            if not clear_on_scan:
+                st.rerun()
 
 # ----------------------------
 # ANALYSIS PHASE (Reads from Sketch)
