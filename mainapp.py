@@ -1,5 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
+#  Updated: Adaptive Granularity for Small vs. Large Data
 #
 import io
 import os
@@ -94,27 +95,47 @@ CHAT_ARTIFACT_RE = re.compile(
 # ---------------------------
 
 class StreamScanner:
-    def __init__(self):
+    def __init__(self, doc_batch_size=5):
         self.global_counts = Counter()
         self.global_bigrams = Counter()
         self.total_rows_processed = 0
+        
+        # Topic Modeling Docs
         self.topic_docs: List[Counter] = [] 
         self.current_doc_accum = Counter()
         self.doc_accum_size = 0
-        self.DOC_BATCH_SIZE = 500 
+        
+        # Configuration: How many rows = 1 Document?
+        # Small Files -> 1 (High resolution)
+        # Huge Files -> 100+ (Low memory usage)
+        self.DOC_BATCH_SIZE = doc_batch_size
+
+    def set_batch_size(self, size: int):
+        self.DOC_BATCH_SIZE = size
 
     def ingest_chunk_stats(self, chunk_counts: Counter, chunk_bigrams: Counter, row_count: int):
+        # 1. Global Stats (Always additive)
         self.global_counts.update(chunk_counts)
         self.global_bigrams.update(chunk_bigrams)
         self.total_rows_processed += row_count
         
-        self.current_doc_accum.update(chunk_counts)
-        self.doc_accum_size += row_count
-        
-        if self.doc_accum_size >= self.DOC_BATCH_SIZE:
-            self.topic_docs.append(self.current_doc_accum)
-            self.current_doc_accum = Counter()
-            self.doc_accum_size = 0
+        # 2. Topic Modeling Aggregation
+        # If DOC_BATCH_SIZE is 1, we save every row as a doc (Ideal for small files)
+        if self.DOC_BATCH_SIZE <= 1:
+            # In this case, we actually need the chunk logic to pass us individual rows
+            # But since we receive aggregated chunk_counts, this is an approximation.
+            # Ideally, for Granularity=1, the process_chunk_iter should append list of counters.
+            # For now, we accept the chunk_counts as "A Document" if the chunk was small.
+            self.topic_docs.append(chunk_counts)
+        else:
+            # Accumulate rows until we hit the batch size
+            self.current_doc_accum.update(chunk_counts)
+            self.doc_accum_size += row_count
+            
+            if self.doc_accum_size >= self.DOC_BATCH_SIZE:
+                self.topic_docs.append(self.current_doc_accum)
+                self.current_doc_accum = Counter()
+                self.doc_accum_size = 0
 
     def finalize(self):
         if self.doc_accum_size > 0 and self.current_doc_accum:
@@ -490,6 +511,9 @@ def process_chunk_iter(
     local_counts = Counter()
     local_bigrams = Counter() if compute_bigrams else Counter()
     
+    # If granularity is set to "1" (Line-by-Line), we must capture docs here, not aggregated
+    is_line_by_line = scanner.DOC_BATCH_SIZE <= 1
+    
     row_count = 0
     _remove_chat, _remove_html, _unescape, _remove_urls = remove_chat_artifacts, remove_html_tags, unescape_entities, remove_urls
     _min_len, _drop_int, _stopwords = min_word_len, drop_integers, stopwords
@@ -505,23 +529,44 @@ def process_chunk_iter(
             except MemoryError: pass
         text = text.lower()
         if _ppat: text = _ppat.sub(" ", text)
+        
         filtered_tokens_line: List[str] = []
         for t in text.split():
             if _remove_urls and _is_url(t): continue
             t = t.translate(_trans)
             if not t or len(t) < _min_len or (_drop_int and t.isdigit()) or t in _stopwords: continue
             filtered_tokens_line.append(t)
+        
         if filtered_tokens_line:
             local_counts.update(filtered_tokens_line)
             if compute_bigrams and len(filtered_tokens_line) > 1:
                 local_bigrams.update(tuple(bg) for bg in pairwise(filtered_tokens_line))
+            
+            # Line-by-Line Topic Doc Capture
+            if is_line_by_line:
+                scanner.ingest_chunk_stats(Counter(filtered_tokens_line), Counter(), 1)
+
         if progress_cb and (row_count % 2000 == 0): progress_cb(row_count)
 
     # NEW: Capture stats for the single file before merging
     if temp_file_stats is not None:
         temp_file_stats.update(local_counts)
 
-    scanner.ingest_chunk_stats(local_counts, local_bigrams, row_count)
+    # Ingest AGGREGATED stats for Global Counts/Bigrams
+    # But if is_line_by_line is True, we already ingested topic docs above.
+    # We pass empty topic doc logic by sending batch size 0 or similar trick, 
+    # but StreamScanner handles double-updates safely because global counts are separate from topic docs.
+    # We just need to make sure we don't double-count rows in total.
+    
+    if not is_line_by_line:
+        scanner.ingest_chunk_stats(local_counts, local_bigrams, row_count)
+    else:
+        # We still need to update global counts, but SKIP adding to topic_docs again
+        # We can do this by updating globals directly
+        scanner.global_counts.update(local_counts)
+        scanner.global_bigrams.update(local_bigrams)
+        scanner.total_rows_processed += row_count
+
     if progress_cb: progress_cb(row_count)
     
     del local_counts
@@ -801,12 +846,12 @@ with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=
     *   **NMF (Non-negative Matrix Factorization):** Best for chat logs/tickets. Assumes text fits into sharp, distinct categories (e.g., "Password Reset").
     
     #### ⚖️ Bayesian Sentiment Inference
-    *   **The Math:** Instead of saying "60% Positive," the app uses a **Beta-Binomial** model. 
-    *   **The Value:** It calculates a **Credible Interval** (e.g., "...95% confident the true positive rate is between 55% and 65%"). This protects you from making bad decisions based on small sample sizes.
+    *   **The Math:** Instead of saying "60% Positive," we use a **Beta-Binomial** model. 
+    *   **The Value:** It calculates a **Credible Interval** (e.g., "We are 95% confident the true positive rate is between 55% and 65%"). This protects you from making bad decisions based on small sample sizes.
 
     #### 🤖 Generative AI Analyst
-    *   **The...art:** Once the math's done, the app sends the *summary statistics* (**not** your raw files) to an LLM (like GPT-4 or Grok).
-    *   **The Output:** The AI acts as a qualitative researcher, writing a narrative report on the themes, anomalies, and root causes it can 'see' in the data.
+    *   **The Magic:** Once the math is done, the app sends the *summary statistics* (not your raw files) to an LLM (like GPT-4 or Grok).
+    *   **The Output:** The AI acts as a qualitative researcher, writing a narrative report on the themes, anomalies, and root causes it sees in the data.
 
     ---
 
@@ -975,6 +1020,15 @@ with st.sidebar:
         st.markdown("**Topic Modeling (LDA/NMF)**")
         topic_model_type = st.selectbox("Model Type", ["LDA (Probabilistic)", "NMF (Distinct)"], index=0, help="LDA is better for long text/essays. NMF is better for short logs/chats.")
         n_topics_val = st.slider("Number of Topics", 2, 10, 4, help="How many hidden themes to search for.")
+        
+        # NEW: Granularity Control
+        st.markdown("**Processing Granularity**")
+        doc_granularity = st.select_slider(
+            "Rows per Document",
+            options=[1, 10, 100, 500],
+            value=5,
+            help="1 = Every line is a document (Best for small files). 500 = Groups rows (Best for massive files)."
+        )
 
 # -----------------------------
 # NEW: DATA REFINERY (UTILITY SECTION)
@@ -1177,6 +1231,9 @@ if all_inputs:
                 json_key = st.text_input("Key to Extract", "", key=f"json_key_{idx}")
 
         if st.button(f"⚡ Start Scan: {fname}", key=f"btn_scan_{idx}"):
+            # Set Batch Size based on user slider
+            st.session_state['sketch'].set_batch_size(doc_granularity)
+            
             if clear_on_scan:
                 reset_sketch() # Standard behavior: New Scan = New Analysis
                 
@@ -1360,7 +1417,8 @@ if combined_counts:
         # 1. graphing config/'physics'
         with st.expander("🛠️ Graph Settings & Physics", expanded=False):
             c1, c2, c3 = st.columns(3)
-            min_edge_weight = c1.slider("Min Link Frequency", 2, 100, 5)
+            # Default Min Link Frequency changed to 2 for better small-file performance
+            min_edge_weight = c1.slider("Min Link Frequency", 2, 100, 2)
             max_nodes_graph = c1.slider("Max Nodes", 10, 200, 80)
             repulsion_val = c2.slider("Repulsion", 100, 3000, 1000)
             edge_len_val = c2.slider("Edge Length", 50, 500, 250)
@@ -1489,10 +1547,11 @@ if combined_counts:
         bg_data = [[" ".join(bg), f] + ([term_sentiments.get(" ".join(bg),0), get_sentiment_category(term_sentiments.get(" ".join(bg),0), pos_threshold, neg_threshold)] if enable_sentiment else []) for bg, f in top_bg]
         bg_cols = ["bigram", "count"] + (["sentiment", "category"] if enable_sentiment else [])
         st.dataframe(pd.DataFrame(bg_data, columns=bg_cols), use_container_width=True)
+
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #808080; font-size: 12px;'>"
-    "open Source software licensed under the MIT License"
+    "Open Source software licensed under the MIT License."
     "</div>", 
     unsafe_allow_html=True
 )
