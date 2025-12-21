@@ -660,18 +660,45 @@ def perform_topic_modeling(synthetic_docs: List[Counter], n_topics: int = 4, top
     if model_type == "NMF" and not NMF: return None
     if len(synthetic_docs) < 1: return None
     
+    # 1. Vectorize
     vectorizer = DictVectorizer(sparse=True)
     dtm = vectorizer.fit_transform(synthetic_docs)
     
+    # --- SAFETY CHECK FOR TINY DATA ---
+    n_samples, n_features = dtm.shape
+    if n_samples == 0 or n_features == 0: return None
+    
+    # NMF using 'nndsvd' cannot extract more topics than the smallest dimension of the data.
+    # If we have 2 documents, we can't find 4 topics.
+    # We automatically cap n_topics to prevent the crash.
+    safe_n_topics = n_topics
+    if model_type == "NMF":
+        max_possible = min(n_samples, n_features)
+        if safe_n_topics > max_possible:
+            safe_n_topics = max_possible
+    
+    # If the cap reduced it to 0 (e.g. empty docs), return None
+    if safe_n_topics < 1: return None
+    # ----------------------------------
+
+    # 2. Initialize Model
     model = None
     if model_type == "LDA":
-        model = LatentDirichletAllocation(n_components=n_topics, random_state=42, learning_method='batch', max_iter=10)
+        # LDA is more forgiving, but we still cap it for sanity
+        safe_n_topics = min(safe_n_topics, n_samples) if n_samples < safe_n_topics else safe_n_topics
+        model = LatentDirichletAllocation(n_components=safe_n_topics, random_state=42, learning_method='batch', max_iter=10)
     elif model_type == "NMF":
-        model = NMF(n_components=n_topics, random_state=42, init='nndsvd')
+        model = NMF(n_components=safe_n_topics, random_state=42, init='nndsvd')
     
     if not model: return None
-    model.fit(dtm)
     
+    try:
+        model.fit(dtm)
+    except ValueError:
+        # Fallback for edge cases where nndsvd still fails
+        return None
+    
+    # 3. Extract Topics
     feature_names = vectorizer.get_feature_names_out()
     topics = []
     
