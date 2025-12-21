@@ -1,6 +1,7 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Fixed: Topic Modeling Granularity Consistency Bug
+#  Fixed: Topic Modeling Granularity Bug
+#  Improved: Safety Caps, Unified Cleaning, URL Regex, Heatmap, NPMI
 #
 import io
 import os
@@ -79,7 +80,7 @@ except ImportError:
     nltk = None
     SentimentIntensityAnalyzer = None
 
-# precompiled patterns
+# --- PRECOMPILED PATTERNS (IMPROVED) ---
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 CHAT_ARTIFACT_RE = re.compile(
     r":\w+:"
@@ -87,6 +88,13 @@ CHAT_ARTIFACT_RE = re.compile(
     r"|\b\d+\s+repl(?:y|ies)\b"
     r"|\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3}"
     r"|\[[^\]]+\]",
+    flags=re.IGNORECASE
+)
+
+# Robust URL and Email Regex
+URL_EMAIL_RE = re.compile(
+    r'(?:https?://|www\.)[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+[^\s]*'  # URLs
+    r'|(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})',          # Emails
     flags=re.IGNORECASE
 )
 
@@ -105,27 +113,36 @@ class StreamScanner:
         self.current_doc_accum = Counter()
         self.doc_accum_size = 0
         
-        # Configuration: How many rows = 1 Document?
+        # Safety / Config
         self.DOC_BATCH_SIZE = doc_batch_size
+        self.MAX_TOPIC_DOCS = 50_000 # Hard cap to prevent OOM
+        self.limit_reached = False
 
     def set_batch_size(self, size: int):
         self.DOC_BATCH_SIZE = size
 
     def ingest_chunk_stats(self, chunk_counts: Counter, chunk_bigrams: Counter, row_count: int):
-        # 1. Global Stats (Always additive)
+        # 1. Global Stats (Always additive, safe to grow)
         self.global_counts.update(chunk_counts)
         self.global_bigrams.update(chunk_bigrams)
         self.total_rows_processed += row_count
         
-        # 2. Topic Modeling Aggregation
-        # If DOC_BATCH_SIZE is 1, we save every row as a doc (Ideal for small files)
+        # 2. Topic Modeling Aggregation (Needs Safety Cap)
+        
+        # If cap reached, we stop adding to topic_docs to save memory, 
+        # but we continue processing global stats.
+        if self.limit_reached:
+            return
+
+        if len(self.topic_docs) >= self.MAX_TOPIC_DOCS:
+            self.limit_reached = True
+            return
+
+        # Granularity Logic
         if self.DOC_BATCH_SIZE <= 1:
-            # For Granularity=1, we treat the chunk summary as a document approximation
-            # Ideally we'd pass list of counters, but this is a trade-off for the streaming arch.
             if chunk_counts:
                 self.topic_docs.append(chunk_counts)
         else:
-            # Accumulate rows until we hit the batch size
             self.current_doc_accum.update(chunk_counts)
             self.doc_accum_size += row_count
             
@@ -135,7 +152,7 @@ class StreamScanner:
                 self.doc_accum_size = 0
 
     def finalize(self):
-        if self.doc_accum_size > 0 and self.current_doc_accum:
+        if not self.limit_reached and self.doc_accum_size > 0 and self.current_doc_accum:
             self.topic_docs.append(self.current_doc_accum)
             self.current_doc_accum = Counter()
             self.doc_accum_size = 0
@@ -146,7 +163,8 @@ class StreamScanner:
             "total_rows": self.total_rows_processed,
             "counts": dict(self.global_counts),
             "bigrams": serializable_bigrams,
-            "topic_docs": [dict(c) for c in self.topic_docs]
+            "topic_docs": [dict(c) for c in self.topic_docs],
+            "limit_reached": self.limit_reached
         }
         return json.dumps(data)
 
@@ -162,6 +180,7 @@ class StreamScanner:
                     parts = k.split("|", 1)
                     self.global_bigrams[(parts[0], parts[1])] = v
             self.topic_docs = [Counter(d) for d in data.get("topic_docs", [])]
+            self.limit_reached = data.get("limit_reached", False)
             return True
         except Exception as e:
             return False
@@ -244,10 +263,9 @@ def build_phrase_pattern(phrases: List[str]) -> Optional[re.Pattern]:
     return re.compile(rf"\b(?:{'|'.join(escaped)})\b", flags=re.IGNORECASE)
 
 def estimate_row_count_from_bytes(file_bytes: bytes) -> int:
+    # Improved to handle Windows line endings better
     if not file_bytes: return 0
-    n = file_bytes.count(b"\n")
-    if not file_bytes.endswith(b"\n"): n += 1
-    return n
+    return file_bytes.count(b'\n') + 1
 
 def format_duration(seconds: float) -> str:
     seconds = int(seconds)
@@ -354,6 +372,7 @@ def read_rows_json(file_bytes: bytes, selected_key: str = None) -> Iterable[str]
                 elif isinstance(obj, str): yield obj
                 else: yield str(obj)
             except json.JSONDecodeError:
+                # Handle standard JSON list if not JSONL
                 bio.seek(0)
                 data = json.load(wrapper)
                 if isinstance(data, list):
@@ -372,10 +391,13 @@ def read_rows_json(file_bytes: bytes, selected_key: str = None) -> Iterable[str]
 def detect_csv_num_cols(file_bytes: bytes, encoding_choice: str = "auto", delimiter: str = ",") -> int:
     enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
     bio = io.BytesIO(file_bytes)
-    with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
-        rdr = csv.reader(wrapper, delimiter=delimiter)
-        row = next(rdr, None)
-        return len(row) if row is not None else 0
+    try:
+        with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
+            rdr = csv.reader(wrapper, delimiter=delimiter)
+            row = next(rdr, None)
+            return len(row) if row is not None else 0
+    except:
+        return 0
 
 def get_csv_columns(file_bytes: bytes, encoding_choice: str = "auto", delimiter: str = ",", has_header: bool = True) -> List[str]:
     enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
@@ -484,10 +506,34 @@ def iter_excel_selected_columns(file_bytes: bytes, sheet_name: str, has_header: 
 # core processing
 # 
 
-def is_url_token(tok: str) -> bool:
-    t = tok.strip("()[]{}<>,.;:'\"!?").lower()
-    if not t: return False
-    return ("://" in t) or t.startswith("www.")
+# --- IMPROVED: Unified Cleaning Function ---
+def apply_text_cleaning(
+    text: str,
+    remove_chat: bool, remove_html: bool, unescape: bool, remove_urls: bool,
+    phrase_pattern: Optional[re.Pattern] = None
+) -> str:
+    if not isinstance(text, str): 
+        return str(text) if text is not None else ""
+        
+    if remove_chat: 
+        text = CHAT_ARTIFACT_RE.sub(" ", text)
+    if remove_html: 
+        text = HTML_TAG_RE.sub(" ", text)
+    if unescape:
+        try: text = html.unescape(text)
+        except: pass
+    
+    # Improved URL removal using the robust regex
+    if remove_urls:
+        text = URL_EMAIL_RE.sub(" ", text)
+        
+    text = text.lower()
+    
+    # Custom Phrase Removal
+    if phrase_pattern:
+        text = phrase_pattern.sub(" ", text)
+        
+    return text.strip()
 
 def process_chunk_iter(
     rows_iter: Iterable[str],
@@ -497,7 +543,7 @@ def process_chunk_iter(
     add_preps: bool, drop_integers: bool, min_word_len: int,
     compute_bigrams: bool, scanner: StreamScanner,
     progress_cb: Optional[Callable[[int], None]] = None, 
-    temp_file_stats: Optional[Counter] = None # NEW: For per-file visualization
+    temp_file_stats: Optional[Counter] = None
 ):
     stopwords = set(STOPWORDS)
     stopwords.update(user_single_stopwords)
@@ -508,28 +554,28 @@ def process_chunk_iter(
     local_counts = Counter()
     local_bigrams = Counter() if compute_bigrams else Counter()
     
-    # If granularity is set to "1" (Line-by-Line), we must capture docs here, not aggregated
     is_line_by_line = scanner.DOC_BATCH_SIZE <= 1
     
     row_count = 0
-    _remove_chat, _remove_html, _unescape, _remove_urls = remove_chat_artifacts, remove_html_tags, unescape_entities, remove_urls
     _min_len, _drop_int, _stopwords = min_word_len, drop_integers, stopwords
-    _is_url, _trans, _ppat = is_url_token, translate_map, phrase_pattern
+    _trans = translate_map
 
     for line in rows_iter:
         row_count += 1
-        text = line if isinstance(line, str) else ("" if line is None else str(line))
-        if _remove_chat: text = CHAT_ARTIFACT_RE.sub(" ", text)
-        if _remove_html: text = HTML_TAG_RE.sub(" ", text)
-        if _unescape:
-            try: text = html.unescape(text)
-            except MemoryError: pass
-        text = text.lower()
-        if _ppat: text = _ppat.sub(" ", text)
+        
+        # --- Use Unified Cleaning ---
+        text = apply_text_cleaning(
+            line, 
+            remove_chat_artifacts, 
+            remove_html_tags, 
+            unescape_entities, 
+            remove_urls, 
+            phrase_pattern
+        )
         
         filtered_tokens_line: List[str] = []
         for t in text.split():
-            if _remove_urls and _is_url(t): continue
+            # URL removal is now handled in apply_text_cleaning via regex
             t = t.translate(_trans)
             if not t or len(t) < _min_len or (_drop_int and t.isdigit()) or t in _stopwords: continue
             filtered_tokens_line.append(t)
@@ -539,7 +585,6 @@ def process_chunk_iter(
             if compute_bigrams and len(filtered_tokens_line) > 1:
                 local_bigrams.update(tuple(bg) for bg in pairwise(filtered_tokens_line))
             
-            # Line-by-Line Topic Doc Capture
             if is_line_by_line:
                 scanner.ingest_chunk_stats(Counter(filtered_tokens_line), Counter(), 1)
 
@@ -572,12 +617,11 @@ def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_htm
     Reads a CSV file, applies cleaning to the text columns, saves to temp chunks, and ZIPs them.
     """
     # 1. Setup cleaning tools
+    # Using the unified cleaning function, so we just need parameters
     _remove_chat = remove_chat_artifacts
     _remove_html = remove_html_tags
     _unescape = unescape_entities
     _remove_urls = remove_urls
-    _is_url = is_url_token # Reuse from main
-    _trans = build_punct_translation(keep_hyphens, keep_apostrophes)
     
     # 2. Process
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -588,27 +632,15 @@ def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_htm
         
         try:
             file_obj.seek(0)
-            # We assume CSV for the "Splitter" logic usually, as it handles structured data best.
-            # Reading with pandas for robust chunking
             df_iterator = pd.read_csv(file_obj, chunksize=chunk_size, on_bad_lines='skip', dtype=str)
             
             for chunk in df_iterator:
-                # Apply cleaning to ALL string columns
                 for col in chunk.columns:
                     chunk[col] = chunk[col].fillna("")
                     
-                    # Apply cleaning lambda
+                    # Apply cleaning lambda using the Shared Function
                     def clean_cell(text):
-                        if not isinstance(text, str): return str(text)
-                        if _remove_chat: text = CHAT_ARTIFACT_RE.sub(" ", text)
-                        if _remove_html: text = HTML_TAG_RE.sub(" ", text)
-                        if _unescape: 
-                            try: text = html.unescape(text)
-                            except: pass
-                        if _remove_urls: 
-                            # Simple removal of URL-like tokens
-                            text = " ".join([t for t in text.split() if not _is_url(t)])
-                        return text.strip()
+                        return apply_text_cleaning(text, _remove_chat, _remove_html, _unescape, _remove_urls)
 
                     chunk[col] = chunk[col].apply(clean_cell)
                 
@@ -712,6 +744,31 @@ def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
         "Avg Word Length": round(avg_len, 2),
         "Lexical Diversity": round(unique_tokens / total_tokens, 4) if total_tokens else 0
     }
+
+# --- NEW: NPMI Calculation
+def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words: int, min_freq: int = 5) -> pd.DataFrame:
+    results = []
+    for (w1, w2), freq in bigram_counts.items():
+        if freq < min_freq: continue
+        
+        count_w1 = unigram_counts.get(w1, 0)
+        count_w2 = unigram_counts.get(w2, 0)
+        
+        if count_w1 == 0 or count_w2 == 0: continue
+        
+        prob_w1 = count_w1 / total_words
+        prob_w2 = count_w2 / total_words
+        prob_bigram = freq / total_words
+        
+        # PMI = log( p(xy) / (p(x)p(y)) )
+        pmi = math.log(prob_bigram / (prob_w1 * prob_w2))
+        
+        # NPMI = PMI / -log(p(xy))
+        npmi = pmi / -math.log(prob_bigram)
+        
+        results.append({"Bigram": f"{w1} {w2}", "Count": freq, "NPMI": round(npmi, 3)})
+    
+    return pd.DataFrame(results).sort_values("NPMI", ascending=False)
 
 # --- Bayesian / ML Helper Functions
 
@@ -1337,6 +1394,10 @@ if all_inputs:
             with container:
                 per_file_bar, per_file_status = st.progress(0), st.empty()
             
+            # --- PROGRESS RESET FIX ---
+            per_file_bar.progress(0)
+            per_file_status.empty()
+            
             rows_iter, approx_rows = iter([]), 0
             
             # Setup Iterator (Streaming Read)
@@ -1398,6 +1459,10 @@ if all_inputs:
             st.session_state['sketch'].finalize()
             per_file_bar.progress(100)
             per_file_status.success(f"Scan Complete! Rows added to Sketch.")
+            
+            # Warn if safety cap hit
+            if st.session_state['sketch'].limit_reached:
+                st.warning(f"⚠️ **Topic Modeling Cap Reached:** The analysis collected {st.session_state['sketch'].MAX_TOPIC_DOCS:,} document samples and then stopped adding more to prevent memory crash. Global word counts are still accurate, but topics may not reflect the very end of your data.")
             
             # RENDER IMMEDIATE FEEDBACK (Small File Mode)
             if file_specific_stats:
@@ -1595,7 +1660,7 @@ if combined_counts:
             agraph(nodes=nodes, edges=edges, config=config)
 
             st.markdown("### 📊 Graph Analytics")
-            tab1, tab2, tab5 = st.tabs(["Basic Stats", "Top Nodes", "Text Stats"])
+            tab1, tab2, tab3, tab4 = st.tabs(["Basic Stats", "Top Nodes", "Text Stats", "🔥 Heatmap"])
             with tab1:
                 col_b1, col_b2, col_b3 = st.columns(3)
                 col_b1.metric("Nodes", G.number_of_nodes())
@@ -1609,13 +1674,55 @@ if combined_counts:
                     node_weights[u] += w
                     node_weights[v] += w
                 st.dataframe(pd.DataFrame(list(node_weights.items()), columns=["Node", "Weighted Degree"]).sort_values("Weighted Degree", ascending=False).head(50), use_container_width=True)
-            with tab5:
+            with tab3:
                 col_s1, col_s2, col_s3, col_s4 = st.columns(4)
                 col_s1.metric("Total Tokens", f"{text_stats['Total Tokens']:,}")
                 col_s2.metric("Unique Vocab", f"{text_stats['Unique Vocabulary']:,}")
                 col_s3.metric("Lexical Diversity", f"{text_stats['Lexical Diversity']}")
                 col_s4.metric("Avg Word Len", f"{text_stats['Avg Word Length']}")
+            
+            # --- NEW: HEATMAP VISUALIZATION ---
+            with tab4:
+                st.caption("Shows how often the Top 20 terms appear next to each other.")
+                # 1. Get Top 20 terms
+                top_20 = [w for w, c in combined_counts.most_common(20)]
+                # 2. Build Matrix
+                mat_size = len(top_20)
+                heatmap_matrix = np.zeros((mat_size, mat_size))
                 
+                for i, w1 in enumerate(top_20):
+                    for j, w2 in enumerate(top_20):
+                        if i == j: 
+                            heatmap_matrix[i][j] = 0 # No self loops in heatmap
+                        else:
+                            # Check (w1, w2) and (w2, w1)
+                            val = combined_bigrams.get((w1, w2), 0) + combined_bigrams.get((w2, w1), 0)
+                            heatmap_matrix[i][j] = val
+
+                # 3. Plot
+                if mat_size > 1:
+                    fig_h, ax_h = plt.subplots(figsize=(10, 8))
+                    im = ax_h.imshow(heatmap_matrix, cmap="Blues")
+                    
+                    # Labels
+                    ax_h.set_xticks(np.arange(mat_size))
+                    ax_h.set_yticks(np.arange(mat_size))
+                    ax_h.set_xticklabels(top_20, rotation=45, ha="right")
+                    ax_h.set_yticklabels(top_20)
+                    
+                    # Annotate
+                    for i in range(mat_size):
+                        for j in range(mat_size):
+                            if heatmap_matrix[i, j] > 0:
+                                ax_h.text(j, i, int(heatmap_matrix[i, j]), ha="center", va="center", color="black" if heatmap_matrix[i,j] < heatmap_matrix.max()/2 else "white", fontsize=8)
+                    
+                    ax_h.set_title("Top 20 Terms Co-occurrence")
+                    plt.tight_layout()
+                    st.pyplot(fig_h)
+                    plt.close(fig_h)
+                else:
+                    st.info("Not enough data for heatmap.")
+
     else:
         st.subheader("📈 Text Statistics")
         col_s1, col_s2, col_s3, col_s4 = st.columns(4)
@@ -1662,11 +1769,21 @@ if combined_counts:
     st.dataframe(pd.DataFrame(data, columns=cols), use_container_width=True)
     
     if compute_bigrams and combined_bigrams:
-        st.write("Bigrams")
+        st.write("Bigrams (By Frequency)")
         top_bg = combined_bigrams.most_common(top_n)
         bg_data = [[" ".join(bg), f] + ([term_sentiments.get(" ".join(bg),0), get_sentiment_category(term_sentiments.get(" ".join(bg),0), pos_threshold, neg_threshold)] if enable_sentiment else []) for bg, f in top_bg]
         bg_cols = ["bigram", "count"] + (["sentiment", "category"] if enable_sentiment else [])
         st.dataframe(pd.DataFrame(bg_data, columns=bg_cols), use_container_width=True)
+
+        # --- NEW: NPMI TABLE ---
+        with st.expander("🔬 Phrase Significance (NPMI Score)", expanded=False):
+            st.markdown("""
+            **NPMI (Normalized Pointwise Mutual Information)** finds words that *belong* together, rather than just words that appear often.
+            *   High Score (> 0.5): Strong association (e.g., "Artificial Intelligence").
+            *   Low Score (< 0.1): Random association (e.g., "of the").
+            """)
+            df_npmi = calculate_npmi(combined_bigrams, combined_counts, scanner.total_rows_processed, min_freq=3)
+            st.dataframe(df_npmi.head(top_n), use_container_width=True)
 
 st.markdown("---")
 st.markdown(
