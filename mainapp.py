@@ -640,6 +640,67 @@ def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_htm
 # stats/ analytics helpers
 #-
 
+def render_interpretation_guide():
+    with st.expander("🎓 Analyst's Guide: How to interpret these results", expanded=False):
+        st.markdown("Use the tabs below to troubleshoot common patterns in your data.")
+        
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "😕 Graph vs. Topics Disagree", 
+            "🌫️ Giant 'Blob' Graph", 
+            "🔍 Topics Look Mixed", 
+            "📉 Too Few Results"
+        ])
+        
+        with tab1:
+            st.markdown("""
+            **Symptom:** The Network Graph shows clear, separated clusters, but the Topic Model (NMF/LDA) lumps them into one topic.
+            
+            **The Cause:**
+            The Graph acts like a **Filter**: it hides weak connections (based on your 'Min Link Frequency' slider). 
+            The Topic Model is a **Sponge**: it absorbs *every* connection, even the weak ones.
+            
+            **The Fix:**
+            1. **Check for 'Bridges':** You likely have 1 or 2 rows of text that contain words from *both* clusters (e.g., "The **video** password **reset** is broken").
+            2. **Granularity:** If 'Rows per Document' is too high, you might be accidentally merging unrelated sentences into one document. Set it to **1**.
+            """)
+            
+        with tab2:
+            st.markdown("""
+            **Symptom:** The Network Graph is one giant, tangled hairball with no clear colors or clusters.
+            
+            **The Cause:**
+            Your data is "Homogenous." Everything is related to everything else. This is common in small datasets or very specific documents (e.g., a legal contract).
+            
+            **The Fix:**
+            1. **Increase 'Min Link Frequency':** Drag the slider up to cut the weak ties and reveal the strong skeleton of the conversation.
+            2. **Repulsion:** Increase the 'Repulsion' slider in Graph Settings to physically push the nodes apart.
+            """)
+            
+        with tab3:
+            st.markdown("""
+            **Symptom:** Topic 1 and Topic 2 look almost identical, or Topic 1 has all the words and Topic 2 has nonsense.
+            
+            **The Cause:**
+            *   **Data Size:** You might not have enough data. NMF needs repetition to find patterns.
+            *   **Granularity:** If 'Rows per Document' is **1**, and your sentences are very short (3-4 words), the math fails because there isn't enough context overlap.
+            
+            **The Fix:**
+            1. **Increase Granularity:** Set 'Rows per Document' to **5** or **10**. This groups sentences together, giving the math more to work with.
+            2. **Switch Model:** Try **LDA**. It is sometimes more forgiving on sparse data than NMF.
+            """)
+
+        with tab4:
+            st.markdown("""
+            **Symptom:** The Word Cloud is empty, or the Graph has no nodes.
+            
+            **The Cause:**
+            Your cleaning rules are too strict.
+            
+            **The Fix:**
+            1. **Stopwords:** Did you add too many custom stopwords?
+            2. **Thresholds:** Lower the 'Top Terms Count' or the 'Min Link Frequency'.
+            """)
+
 def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
     total_tokens = sum(counts.values())
     unique_tokens = len(counts)
