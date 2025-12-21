@@ -1,6 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Fixed: Select Slider Default Value Error
+#  Fixed: Topic Modeling Granularity Consistency Bug
 #
 import io
 import os
@@ -1108,6 +1108,23 @@ with st.sidebar:
             value=5,
             help="1 = Every line is a document (Best for small files). 500 = Groups rows (Best for massive files)."
         )
+        
+        # --- FIXED: GRANULARITY CONSISTENCY CHECK ---
+        # Initialize
+        if 'last_granularity' not in st.session_state:
+            st.session_state['last_granularity'] = doc_granularity
+
+        # Check for change
+        if st.session_state['last_granularity'] != doc_granularity:
+            # Only reset if we actually have data to lose
+            if st.session_state['sketch'].total_rows_processed > 0:
+                st.warning(f"Granularity changed ({st.session_state['last_granularity']} → {doc_granularity}). Previous data reset to ensure consistent Topic Modeling.")
+                reset_sketch()
+            st.session_state['last_granularity'] = doc_granularity
+
+        # Ensure sketch always has current setting (Immediately, not just on scan)
+        st.session_state['sketch'].set_batch_size(doc_granularity)
+        # ----------------------------------------------
 
 # -----------------------------
 # NEW: DATA REFINERY (UTILITY SECTION)
@@ -1310,7 +1327,7 @@ if all_inputs:
                 json_key = st.text_input("Key to Extract", "", key=f"json_key_{idx}")
 
         if st.button(f"⚡ Start Scan: {fname}", key=f"btn_scan_{idx}"):
-            # Set Batch Size based on user slider
+            # Note: Batch size is already set by the sidebar logic logic, but repeating here is safe.
             st.session_state['sketch'].set_batch_size(doc_granularity)
             
             if clear_on_scan:
