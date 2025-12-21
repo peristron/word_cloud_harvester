@@ -958,50 +958,39 @@ with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=
     #### 2. The "Deep Scan" Workflow (Large Datasets)
     *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
     *   **How:** Upload the file. Click **"Start Scan"**. 
-    *   **Result:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts the statistics (counts, connections, topics) into a lightweight "Sketch," and immediately discards the raw text to save memory.
-    *   **Benefit:** You can process datasets larger than your available RAM.
+    *   **Result:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts the statistics into a lightweight "Sketch," and immediately discards the raw text to save memory.
 
     #### 3. The "Enterprise" Workflow (Offline Harvesting)
     *   **Best for:** Massive corporate datasets (10M+ rows) or sensitive data that cannot leave your secure server.
-    *   **How:** 
-        1. Download the **Harvester Script** (found in the "Enterprise Workflow" expander below).
-        2. Run it locally on your secure server against your data.
-        3. It generates a `.json` "Sketch File" (pure statistics, no raw text).
-        4. Upload that `.json` file here to visualize the results instantly.
+    *   **How:** Use the **Offline Harvester** script (found below) to process data locally. It produces a `.json` file containing only math/statistics (no raw text) which you can upload here.
 
     ---
 
     ### 🧠 The Analytical Engines
 
     #### 🕸️ Network Graph & Community Detection
-    *   **Concept:** Maps how words connect (e.g., if "Battery" appears often near "Drain," they are linked).
-    *   **Communities:** Colors represent clusters of topics. If distinct clusters appear, you have successfully separated different conversations (e.g., "Login Issues" vs. "Billing Issues").
+    *   **Concept:** Maps how words connect. Colors represent clusters of topics.
+    *   **Value:** If distinct clusters appear, you have successfully separated different conversations (e.g., "Login Issues" vs. "Billing Issues").
+
+    #### 🔥 Heatmap & Phrase Significance (NPMI)
+    *   **Heatmap:** Visualizes the "neighborhood" of your top terms. See exactly how often "Battery" appears next to "Drain" vs "Charger."
+    *   **NPMI (Normalized Pointwise Mutual Information):** A statistical score that separates **Meaningful Phrases** (e.g., "Artificial Intelligence") from **Random Noise** (e.g., "of the").
 
     #### 🔍 Bayesian Theme Discovery (Topic Modeling)
-    *   **LDA (Latent Dirichlet Allocation):** Best for essays/assignments. Assumes text is a "smoothie" of mixed topics (e.g., 40% History, 60% Politics).
-    *   **NMF (Non-negative Matrix Factorization):** Best for chat logs/tickets. Assumes text fits into sharp, distinct categories (e.g., "Password Reset").
-    
-    #### ⚖️ Bayesian Sentiment Inference
-    *   **The Math:** Instead of saying "60% Positive," we use a **Beta-Binomial** model. 
-    *   **The Value:** It calculates a **Credible Interval** (e.g., "We are 95% confident the true positive rate is between 55% and 65%"). This protects you from making bad decisions based on small sample sizes.
+    *   **LDA:** Best for essays/assignments (assumes mixed topics).
+    *   **NMF:** Best for chat logs/tickets (assumes distinct categories).
+    *   *Note:* Uses a safety cap (50k docs) to prevent memory crashes on massive files.
 
-    #### 🤖 Generative AI Analyst
-    *   **The...art:** Once the math's done, the app sends the *summary statistics* (not your raw files) to an LLM (like GPT-4 or Grok).
-    *   **The Output:** The AI acts as a qualitative researcher, writing a narrative report on the themes, anomalies, and root causes it 'sees' in the data.
+    #### ⚖️ Bayesian Sentiment Inference
+    *   **The Value:** Calculates a **Credible Interval** (e.g., "We are 95% confident the positive rate is between 55-65%") rather than a raw average, protecting you from small-sample bias.
 
     ---
 
     ### ⚡ Utility: The Data Refinery
-    *   Located at the bottom of the page.
-    *   **Purpose:** If you have a messy 500MB log file that Excel can't open, upload it there. 
-    *   **Action:** The app cleans the text (removes HTML, timestamps, PII risks) and **splits** it into manageable 50k-row CSV chunks.
-    *   **Output:** A ZIP file of clean, Excel-ready data.
+    *   **Purpose:** Clean and split massive files that Excel can't open.
+    *   **Consistency:** It now uses the **exact same** cleaning logic (Regex, URL removal, Stopwords) as the analysis engine.
+    *   **Output:** A ZIP file of clean, Excel-ready CSV chunks.
     """)
-
-st.warning("""
-**⚠️ Data Privacy & Security Notice**
-Data is processed ephemerally. Raw text is not stored. Do not upload files containing sensitive PII on public servers.
-""")
 
 analyzer = setup_sentiment_analyzer()
 
