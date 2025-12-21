@@ -1409,7 +1409,7 @@ combined_bigrams = scanner.global_bigrams
 if combined_counts:
     st.divider()
     st.header("📊 Analysis Phase")
-    
+    render_interpretation_guide() 
     # NEW: SKETCH EXPORT
     st.download_button(
         label="💾 Download Sketch (.json) for later",
