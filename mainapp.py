@@ -979,7 +979,7 @@ with st.sidebar:
     
     st.markdown("### ⚙️ Processing")
     proc_conf = ProcessingConfig(
-        min_word_len=st.slider("Min Word Len", 1, 10, 2, help="Ignore words shorter than this. Useful to remove noise like 'id', 'go', 'ok' if not in stopwords."),
+        min_word_len=st.slider("Min Word Length", 1, 10, 2, help="Ignore words shorter than this. Useful to remove noise like 'id', 'go', 'ok' if not in stopwords."),
         drop_integers=st.checkbox("Drop Integers", True, help="Removes standalone numbers (e.g., '2023', '42'). Keeps alphanumerics like 'Model3'."),
         compute_bigrams=st.checkbox("Bigrams", True, help="Counts pairs of words (e.g., 'Data Science') in addition to single words."),
         translate_map=build_punct_translation(st.checkbox("Keep Hyphens"), st.checkbox("Keep Apostrophes")),
