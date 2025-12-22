@@ -1,6 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Status: PRODUCTION (Security Hardened + Full Feature Set + Bug Fix: top_n restored)
+#  Status: PRODUCTION (Bug Fix: Restored get_sentiment_category)
 #
 import io
 import os
@@ -872,6 +872,12 @@ def create_sentiment_color_func(sentiments: Dict[str, float], pos_color, neg_col
         else: return neu_color
     return color_func
 
+# --- RESTORED HELPER FUNCTION ---
+def get_sentiment_category(score: float, pos_threshold: float, neg_threshold: float) -> str:
+    if score >= pos_threshold: return "Positive"
+    if score <= neg_threshold: return "Negative"
+    return "Neutral"
+
 def build_wordcloud_figure_from_counts(counts: Counter, max_words: int, width: int, height: int, bg_color: str, colormap: str, font_path: Optional[str], random_state: int, color_func: Optional[Callable] = None):
     limited = dict(counts.most_common(max_words))
     if not limited: return plt.figure(), None
@@ -1481,14 +1487,34 @@ if combined_counts:
     st.divider()
     st.subheader(f"📊 Frequency Tables (Top {top_n})")
     most_common = combined_counts.most_common(top_n)
-    data = [[w, f] + ([term_sentiments.get(w,0), get_sentiment_category(term_sentiments.get(w,0), pos_threshold, neg_threshold)] if enable_sentiment else []) for w, f in most_common]
+    
+    # Updated Table Logic
+    data = []
+    if enable_sentiment:
+        for w, f in most_common:
+            score = term_sentiments.get(w, 0.0)
+            category = get_sentiment_category(score, pos_threshold, neg_threshold)
+            data.append([w, f, score, category])
+    else:
+        data = [[w, f] for w, f in most_common]
+
     cols = ["word", "count"] + (["sentiment", "category"] if enable_sentiment else [])
     st.dataframe(pd.DataFrame(data, columns=cols), use_container_width=True)
     
     if proc_conf.compute_bigrams and combined_bigrams:
         st.write("Bigrams (By Frequency)")
         top_bg = combined_bigrams.most_common(top_n)
-        bg_data = [[" ".join(bg), f] + ([term_sentiments.get(" ".join(bg),0), get_sentiment_category(term_sentiments.get(" ".join(bg),0), pos_threshold, neg_threshold)] if enable_sentiment else []) for bg, f in top_bg]
+        
+        bg_data = []
+        if enable_sentiment:
+            for bg_tuple, f in top_bg:
+                bg_str = " ".join(bg_tuple)
+                score = term_sentiments.get(bg_str, 0.0)
+                category = get_sentiment_category(score, pos_threshold, neg_threshold)
+                bg_data.append([bg_str, f, score, category])
+        else:
+            bg_data = [[" ".join(bg), f] for bg, f in top_bg]
+
         bg_cols = ["bigram", "count"] + (["sentiment", "category"] if enable_sentiment else [])
         st.dataframe(pd.DataFrame(bg_data, columns=bg_cols), use_container_width=True)
 
