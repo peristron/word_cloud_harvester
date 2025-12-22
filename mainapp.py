@@ -1,7 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Status: Production Ready
-#  Features: Topic Modeling (Cap), Heatmap, NPMI, Unified Cleaning
+#  Refactored: Fixes Double-Counting, Scoping, JSON Reader, and NPMI Math
 #
 import io
 import os
@@ -15,10 +14,9 @@ import math
 import string
 import zipfile
 import tempfile
-import shutil
 import numpy as np
 from collections import Counter
-from typing import Dict, List, Tuple, Iterable, Optional, Callable, Any
+from typing import Dict, List, Tuple, Iterable, Optional, Callable, Any,  Union
 
 import pandas as pd
 import streamlit as st
@@ -34,7 +32,7 @@ import networkx as nx
 import networkx.algorithms.community as nx_comm
 from streamlit_agraph import agraph, Node, Edge, Config
 
-# --- NEW: Web Scraping Imports
+# --- Third Party Imports Checks
 try:
     import requests
     from bs4 import BeautifulSoup
@@ -42,7 +40,6 @@ except ImportError:
     requests = None
     BeautifulSoup = None
 
-# --- NEW: Bayesian / ML Imports
 try:
     from scipy.stats import beta as beta_dist
 except ImportError:
@@ -56,7 +53,6 @@ except ImportError:
     NMF = None
     DictVectorizer = None
 
-# --- optional imports
 try:
     import openpyxl
 except ImportError:
@@ -67,7 +63,6 @@ try:
 except ImportError:
     pypdf = None
 
-# --- PPTX Support
 try:
     import pptx
 except ImportError:
@@ -110,8 +105,6 @@ class StreamScanner:
         
         # Topic Modeling Docs
         self.topic_docs: List[Counter] = [] 
-        self.current_doc_accum = Counter()
-        self.doc_accum_size = 0
         
         # Safety / Config
         self.DOC_BATCH_SIZE = doc_batch_size
@@ -121,13 +114,17 @@ class StreamScanner:
     def set_batch_size(self, size: int):
         self.DOC_BATCH_SIZE = size
 
-    def ingest_chunk_stats(self, chunk_counts: Counter, chunk_bigrams: Counter, row_count: int):
-        # 1. Global Stats (Always additive)
-        self.global_counts.update(chunk_counts)
-        self.global_bigrams.update(chunk_bigrams)
-        self.total_rows_processed += row_count
+    def update_global_stats(self, counts: Counter, bigrams: Counter, rows: int):
+        """Purely updates global counters. Does NOT touch topic docs."""
+        self.global_counts.update(counts)
+        self.global_bigrams.update(bigrams)
+        self.total_rows_processed += rows
+
+    def add_topic_sample(self, doc_counts: Counter):
+        """Adds a document to the topic modeling list (if safety check passes)."""
+        if not doc_counts: 
+            return # Don't add empty documents
         
-        # 2. Topic Modeling Aggregation (Needs Safety Cap)
         if self.limit_reached:
             return
 
@@ -135,24 +132,7 @@ class StreamScanner:
             self.limit_reached = True
             return
 
-        # Granularity Logic
-        if self.DOC_BATCH_SIZE <= 1:
-            if chunk_counts:
-                self.topic_docs.append(chunk_counts)
-        else:
-            self.current_doc_accum.update(chunk_counts)
-            self.doc_accum_size += row_count
-            
-            if self.doc_accum_size >= self.DOC_BATCH_SIZE:
-                self.topic_docs.append(self.current_doc_accum)
-                self.current_doc_accum = Counter()
-                self.doc_accum_size = 0
-
-    def finalize(self):
-        if not self.limit_reached and self.doc_accum_size > 0 and self.current_doc_accum:
-            self.topic_docs.append(self.current_doc_accum)
-            self.current_doc_accum = Counter()
-            self.doc_accum_size = 0
+        self.topic_docs.append(doc_counts)
 
     def to_json(self) -> str:
         serializable_bigrams = {f"{k[0]}|{k[1]}": v for k, v in self.global_bigrams.items()}
@@ -179,7 +159,7 @@ class StreamScanner:
             self.topic_docs = [Counter(d) for d in data.get("topic_docs", [])]
             self.limit_reached = data.get("limit_reached", False)
             return True
-        except Exception as e:
+        except Exception:
             return False
 
 # Initialize Session State
@@ -356,9 +336,12 @@ def read_rows_pptx(file_bytes: bytes) -> Iterable[str]:
     except Exception:
         yield ""
 
+# --- REFACTORED: ROBUST JSON READER ---
 def read_rows_json(file_bytes: bytes, selected_key: str = None) -> Iterable[str]:
+    # 1. Try JSONL (Line delimited)
     bio = io.BytesIO(file_bytes)
     try:
+        # Use a wrapper that doesn't close the byte stream immediately
         wrapper = io.TextIOWrapper(bio, encoding="utf-8", errors="replace")
         for line in wrapper:
             if not line.strip(): continue
@@ -368,18 +351,24 @@ def read_rows_json(file_bytes: bytes, selected_key: str = None) -> Iterable[str]
                 elif isinstance(obj, str): yield obj
                 else: yield str(obj)
             except json.JSONDecodeError:
-                bio.seek(0)
-                data = json.load(wrapper)
-                if isinstance(data, list):
-                    for item in data:
-                        if selected_key and isinstance(item, dict): yield str(item.get(selected_key, ""))
-                        else: yield str(item)
-                elif isinstance(data, dict):
-                     if selected_key: yield str(data.get(selected_key, ""))
-                     else: yield str(data)
-                break 
-    except Exception:
-        pass
+                raise ValueError("Not JSONL") # Trigger fallback
+    except (ValueError, Exception):
+        # 2. Fallback to Standard JSON (load whole file)
+        # We must create a NEW BytesIO because the previous TextIOWrapper might have buffered
+        bio_fallback = io.BytesIO(file_bytes)
+        try:
+            wrapper = io.TextIOWrapper(bio_fallback, encoding="utf-8", errors="replace")
+            data = json.load(wrapper)
+            
+            if isinstance(data, list):
+                for item in data:
+                    if selected_key and isinstance(item, dict): yield str(item.get(selected_key, ""))
+                    else: yield str(item)
+            elif isinstance(data, dict):
+                 if selected_key: yield str(data.get(selected_key, ""))
+                 else: yield str(data)
+        except Exception:
+            yield "" # Give up
 
 # --csv/excel utils
 
@@ -501,7 +490,7 @@ def iter_excel_selected_columns(file_bytes: bytes, sheet_name: str, has_header: 
 # core processing
 # 
 
-# --- IMPROVED: Unified Cleaning Function ---
+# --- UNIFIED CLEANING FUNCTION ---
 def apply_text_cleaning(
     text: str,
     remove_chat: bool, remove_html: bool, unescape: bool, remove_urls: bool,
@@ -530,6 +519,7 @@ def apply_text_cleaning(
         
     return text.strip()
 
+# --- REFACTORED: PROCESS CHUNK ITER (Fixes Double Counting) ---
 def process_chunk_iter(
     rows_iter: Iterable[str],
     remove_chat_artifacts: bool, remove_html_tags: bool, unescape_entities: bool, remove_urls: bool,
@@ -546,8 +536,13 @@ def process_chunk_iter(
     translate_map = build_punct_translation(keep_hyphens=keep_hyphens, keep_apostrophes=keep_apostrophes)
     phrase_pattern = build_phrase_pattern(list(user_phrase_stopwords))
     
-    local_counts = Counter()
-    local_bigrams = Counter() if compute_bigrams else Counter()
+    # Local accumulators for the entire file
+    local_global_counts = Counter()
+    local_global_bigrams = Counter() if compute_bigrams else Counter()
+    
+    # State for Batch-Mode Topic Modeling (if granularity > 1)
+    batch_accum = Counter()
+    batch_rows = 0
     
     is_line_by_line = scanner.DOC_BATCH_SIZE <= 1
     
@@ -558,7 +553,7 @@ def process_chunk_iter(
     for line in rows_iter:
         row_count += 1
         
-        # --- Use Unified Cleaning ---
+        # Unified Cleaning
         text = apply_text_cleaning(
             line, 
             remove_chat_artifacts, 
@@ -568,6 +563,7 @@ def process_chunk_iter(
             phrase_pattern
         )
         
+        # Tokenize
         filtered_tokens_line: List[str] = []
         for t in text.split():
             t = t.translate(_trans)
@@ -575,32 +571,48 @@ def process_chunk_iter(
             filtered_tokens_line.append(t)
         
         if filtered_tokens_line:
-            local_counts.update(filtered_tokens_line)
-            if compute_bigrams and len(filtered_tokens_line) > 1:
-                local_bigrams.update(tuple(bg) for bg in pairwise(filtered_tokens_line))
+            # 1. Update File-Level Global Stats
+            line_counts = Counter(filtered_tokens_line)
+            local_global_counts.update(line_counts)
             
+            if compute_bigrams and len(filtered_tokens_line) > 1:
+                line_bigrams = Counter(tuple(bg) for bg in pairwise(filtered_tokens_line))
+                local_global_bigrams.update(line_bigrams)
+            
+            # 2. Handle Topic Modeling Documents
             if is_line_by_line:
-                scanner.ingest_chunk_stats(Counter(filtered_tokens_line), Counter(), 1)
+                # Mode A: Every line is a doc. Add immediately.
+                scanner.add_topic_sample(line_counts)
+            else:
+                # Mode B: Accumulate lines until batch size
+                batch_accum.update(line_counts)
+                batch_rows += 1
+                if batch_rows >= scanner.DOC_BATCH_SIZE:
+                    scanner.add_topic_sample(batch_accum)
+                    batch_accum = Counter()
+                    batch_rows = 0
 
         if progress_cb and (row_count % 2000 == 0): progress_cb(row_count)
 
-    # NEW: Capture stats for the single file before merging
-    if temp_file_stats is not None:
-        temp_file_stats.update(local_counts)
+    # End of Loop Processing
+    
+    # 1. Finalize Topic Docs (for Batch Mode)
+    if not is_line_by_line and batch_accum and batch_rows > 0:
+        scanner.add_topic_sample(batch_accum)
 
-    # Ingest AGGREGATED stats for Global Counts/Bigrams
-    if not is_line_by_line:
-        scanner.ingest_chunk_stats(local_counts, local_bigrams, row_count)
-    else:
-        # We still need to update global counts, but SKIP adding to topic_docs again
-        scanner.global_counts.update(local_counts)
-        scanner.global_bigrams.update(local_bigrams)
-        scanner.total_rows_processed += row_count
+    # 2. Update Global Scanner Stats (ONCE PER FILE)
+    scanner.update_global_stats(local_global_counts, local_global_bigrams, row_count)
+
+    # 3. Update Temp Stats for UI
+    if temp_file_stats is not None:
+        temp_file_stats.update(local_global_counts)
 
     if progress_cb: progress_cb(row_count)
     
-    del local_counts
-    del local_bigrams
+    # Cleanup
+    del local_global_counts
+    del local_global_bigrams
+    del batch_accum
     gc.collect()
 
 # --
@@ -610,14 +622,11 @@ def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_htm
     """
     Reads a CSV file, applies cleaning to the text columns, saves to temp chunks, and ZIPs them.
     """
-    # 1. Setup cleaning tools
-    # Using the unified cleaning function, so we just need parameters
     _remove_chat = remove_chat_artifacts
     _remove_html = remove_html_tags
     _unescape = unescape_entities
     _remove_urls = remove_urls
     
-    # 2. Process
     with tempfile.TemporaryDirectory() as temp_dir:
         original_name = os.path.splitext(file_obj.name)[0]
         status_container = st.status(f"⚙️ Refining {file_obj.name}...", expanded=True)
@@ -631,14 +640,10 @@ def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_htm
             for chunk in df_iterator:
                 for col in chunk.columns:
                     chunk[col] = chunk[col].fillna("")
-                    
-                    # Apply cleaning lambda using the Shared Function
                     def clean_cell(text):
                         return apply_text_cleaning(text, _remove_chat, _remove_html, _unescape, _remove_urls)
-
                     chunk[col] = chunk[col].apply(clean_cell)
                 
-                # Save chunk
                 new_filename = f"{original_name}_cleaned_part_{part_num}.csv"
                 temp_path = os.path.join(temp_dir, new_filename)
                 chunk.to_csv(temp_path, index=False)
@@ -646,7 +651,6 @@ def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_htm
                 status_container.write(f"✅ Processed chunk {part_num} ({len(chunk)} rows)")
                 part_num += 1
             
-            # Zip
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                 for file_path in created_files:
@@ -654,7 +658,6 @@ def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_htm
             
             zip_buffer.seek(0)
             status_container.update(label="🎉 Refinery Job Complete!", state="complete", expanded=False)
-            
             return zip_buffer
             
         except Exception as e:
@@ -730,9 +733,12 @@ def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
         "Lexical Diversity": round(unique_tokens / total_tokens, 4) if total_tokens else 0
     }
 
-# --- NEW: NPMI Calculation
+# --- REFACTORED: NPMI Calculation (Fixes Division by Zero)
 def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words: int, min_freq: int = 5) -> pd.DataFrame:
     results = []
+    # Epsilon to prevent div by zero if prob_bigram is 1.0 (log(1) = 0)
+    epsilon = 1e-10
+    
     for (w1, w2), freq in bigram_counts.items():
         if freq < min_freq: continue
         
@@ -746,10 +752,18 @@ def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words:
         prob_bigram = freq / total_words
         
         # PMI = log( p(xy) / (p(x)p(y)) )
-        pmi = math.log(prob_bigram / (prob_w1 * prob_w2))
-        
+        try:
+            pmi = math.log(prob_bigram / (prob_w1 * prob_w2))
+        except ValueError:
+            continue
+
         # NPMI = PMI / -log(p(xy))
-        npmi = pmi / -math.log(prob_bigram)
+        log_prob_bigram = math.log(prob_bigram)
+        if abs(log_prob_bigram) < epsilon:
+            # Case where probability is 1.0 (unlikely but causes div by zero)
+            npmi = 1.0
+        else:
+            npmi = pmi / -log_prob_bigram
         
         results.append({"Bigram": f"{w1} {w2}", "Count": freq, "NPMI": round(npmi, 3)})
     
@@ -767,27 +781,20 @@ def perform_topic_modeling(synthetic_docs: List[Counter], n_topics: int = 4, top
     vectorizer = DictVectorizer(sparse=True)
     dtm = vectorizer.fit_transform(synthetic_docs)
     
-    # --- SAFETY CHECK FOR TINY DATA ---
     n_samples, n_features = dtm.shape
     if n_samples == 0 or n_features == 0: return None
     
-    # NMF using 'nndsvd' cannot extract more topics than the smallest dimension of the data.
-    # If we have 2 documents, we can't find 4 topics.
-    # We automatically cap n_topics to prevent the crash.
     safe_n_topics = n_topics
     if model_type == "NMF":
         max_possible = min(n_samples, n_features)
         if safe_n_topics > max_possible:
             safe_n_topics = max_possible
     
-    # If the cap reduced it to 0 (e.g. empty docs), return None
     if safe_n_topics < 1: return None
-    # ----------------------------------
 
     # 2. Initialize Model
     model = None
     if model_type == "LDA":
-        # LDA is more forgiving, but we still cap it for sanity
         safe_n_topics = min(safe_n_topics, n_samples) if n_samples < safe_n_topics else safe_n_topics
         model = LatentDirichletAllocation(n_components=safe_n_topics, random_state=42, learning_method='batch', max_iter=10)
     elif model_type == "NMF":
@@ -798,7 +805,6 @@ def perform_topic_modeling(synthetic_docs: List[Counter], n_topics: int = 4, top
     try:
         model.fit(dtm)
     except ValueError:
-        # Fallback for edge cases where nndsvd still fails
         return None
     
     # 3. Extract Topics
@@ -1249,6 +1255,7 @@ if url_input:
                 if scraped_text:
                     safe_name = re.sub(r'[^a-zA-Z0-9]', '_', url.split('//')[-1])[:50] + ".txt"
                     all_inputs.append(VirtualFile(safe_name, scraped_text))
+                time.sleep(1.0) # Rate limiting
             status.update(label="Scraping Complete", state="complete", expanded=False)
 
 if manual_input:
@@ -1260,6 +1267,10 @@ if all_inputs:
     
     total_files = len(all_inputs)
 
+    # --- REFACTORED: CONFIGURATION EXTRACTION ---
+    # Instead of using locals(), we store config in a dict
+    file_configs = {}
+
     for idx, file in enumerate(all_inputs):
         file_bytes, fname, lower = file.getvalue(), file.name, file.name.lower()
         
@@ -1270,6 +1281,13 @@ if all_inputs:
         is_json = lower.endswith(".json")
         is_pdf = lower.endswith(".pdf")
         is_pptx = lower.endswith(".pptx")
+        
+        # Defaults
+        config = {
+            "is_csv": is_csv, "is_xlsx": is_xlsx, "is_json": is_json,
+            "read_mode": "raw lines", "delimiter": ",", "has_header": False,
+            "sheet_name": None, "json_key": None, "selected_cols": [], "join_with": " "
+        }
 
         # --- input options w/ data preview-
         with st.expander(f"🧩 Scan Configuration: {fname}", expanded=True):
@@ -1281,37 +1299,39 @@ if all_inputs:
                 try: inferred_cols = detect_csv_num_cols(file_bytes, encoding_choice, delimiter=",")
                 except Exception: inferred_cols = 1
                 default_mode = "csv columns" if inferred_cols > 1 else "raw lines"
-                read_mode = st.radio("read mode", ["raw lines", "csv columns"], index=0 if default_mode=="raw lines" else 1, key=f"csv_mode_{idx}")
-                delim_choice = st.selectbox("delimiter", [",", "tab", ";", "|"], 0, key=f"csv_delim_{idx}")
-                delimiter = {",": ",", "tab": "\t", ";": ";", "|": "|"}[delim_choice]
-                has_header = st.checkbox("header row", value=True if inferred_cols > 1 else False, key=f"csv_header_{idx}")
-                selected_cols, join_with = [], " "
                 
-                if read_mode == "csv columns":
+                config["read_mode"] = st.radio("read mode", ["raw lines", "csv columns"], index=0 if default_mode=="raw lines" else 1, key=f"csv_mode_{idx}")
+                delim_choice = st.selectbox("delimiter", [",", "tab", ";", "|"], 0, key=f"csv_delim_{idx}")
+                config["delimiter"] = {",": ",", "tab": "\t", ";": ";", "|": "|"}[delim_choice]
+                config["has_header"] = st.checkbox("header row", value=True if inferred_cols > 1 else False, key=f"csv_header_{idx}")
+                
+                if config["read_mode"] == "csv columns":
                     st.caption("🔍 Data Preview")
-                    df_prev = get_csv_preview(file_bytes, encoding_choice, delimiter, has_header)
+                    df_prev = get_csv_preview(file_bytes, encoding_choice, config["delimiter"], config["has_header"])
                     st.dataframe(df_prev, use_container_width=True, height=150)
                     if not df_prev.empty:
                         col_names = list(df_prev.columns)
-                        selected_cols = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"csv_cols_{idx}")
-                        join_with = st.text_input("join with", " ", key=f"csv_join_{idx}")
+                        config["selected_cols"] = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"csv_cols_{idx}")
+                        config["join_with"] = st.text_input("join with", " ", key=f"csv_join_{idx}")
             elif is_xlsx:
                 if openpyxl:
                     sheets = get_excel_sheetnames(file_bytes)
-                    sheet_name = st.selectbox("sheet", sheets or ["(none)"], 0, key=f"xlsx_sheet_{idx}")
-                    has_header = st.checkbox("header row", True, key=f"xlsx_header_{idx}")
-                    if sheet_name:
+                    config["sheet_name"] = st.selectbox("sheet", sheets or ["(none)"], 0, key=f"xlsx_sheet_{idx}")
+                    config["has_header"] = st.checkbox("header row", True, key=f"xlsx_header_{idx}")
+                    if config["sheet_name"]:
                         st.caption("🔍 Data Preview")
-                        df_prev = get_excel_preview(file_bytes, sheet_name, has_header)
+                        df_prev = get_excel_preview(file_bytes, config["sheet_name"], config["has_header"])
                         st.dataframe(df_prev, use_container_width=True, height=150)
                         if not df_prev.empty:
                             col_names = list(df_prev.columns)
-                            selected_cols = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"xlsx_cols_{idx}")
-                            join_with = st.text_input("join with", " ", key=f"xlsx_join_{idx}")
+                            config["selected_cols"] = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"xlsx_cols_{idx}")
+                            config["join_with"] = st.text_input("join with", " ", key=f"xlsx_join_{idx}")
 
             elif is_json:
                 st.info("JSON/JSONL File.")
-                json_key = st.text_input("Key to Extract", "", key=f"json_key_{idx}")
+                config["json_key"] = st.text_input("Key to Extract", "", key=f"json_key_{idx}")
+        
+        file_configs[idx] = config
 
         if st.button(f"⚡ Start Scan: {fname}", key=f"btn_scan_{idx}"):
             # Note: Batch size is already set by the sidebar logic logic, but repeating here is safe.
@@ -1330,6 +1350,9 @@ if all_inputs:
             
             rows_iter, approx_rows = iter([]), 0
             
+            # Use Config Dict
+            c = file_configs[idx]
+
             # Setup Iterator (Streaming Read)
             if is_vtt:
                 rows_iter = read_rows_vtt(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto")
@@ -1344,20 +1367,18 @@ if all_inputs:
                 rows_iter = read_rows_raw_lines(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto")
                 approx_rows = estimate_row_count_from_bytes(file_bytes)
             elif is_json:
-                key_sel = locals().get('json_key', None)
-                rows_iter = read_rows_json(file_bytes, key_sel if key_sel and key_sel.strip() else None)
+                rows_iter = read_rows_json(file_bytes, c["json_key"] if c["json_key"] and c["json_key"].strip() else None)
                 approx_rows = estimate_row_count_from_bytes(file_bytes)
             elif is_csv:
-                rmode = locals().get('read_mode', "raw lines")
-                if rmode == "raw lines":
+                if c["read_mode"] == "raw lines":
                     rows_iter = read_rows_raw_lines(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto")
                 else:
-                    rows_iter = iter_csv_selected_columns(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto", delimiter, has_header, selected_cols, join_with)
+                    rows_iter = iter_csv_selected_columns(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto", c["delimiter"], c["has_header"], c["selected_cols"], c["join_with"])
                 approx_rows = estimate_row_count_from_bytes(file_bytes)
             elif is_xlsx and openpyxl:
-                if sheet_name:
-                    rows_iter = iter_excel_selected_columns(file_bytes, sheet_name, has_header, selected_cols, join_with)
-                    approx_rows = excel_estimate_rows(file_bytes, sheet_name, has_header)
+                if c["sheet_name"]:
+                    rows_iter = iter_excel_selected_columns(file_bytes, c["sheet_name"], c["has_header"], c["selected_cols"], c["join_with"])
+                    approx_rows = excel_estimate_rows(file_bytes, c["sheet_name"], c["has_header"])
             else:
                 rows_iter = read_rows_raw_lines(file_bytes, "latin-1" if encoding_choice == "latin-1" else "auto")
                 approx_rows = estimate_row_count_from_bytes(file_bytes)
@@ -1386,7 +1407,6 @@ if all_inputs:
                 make_progress_cb(approx_rows), temp_file_stats=file_specific_stats
             )
             
-            st.session_state['sketch'].finalize()
             per_file_bar.progress(100)
             per_file_status.success(f"Scan Complete! Rows added to Sketch.")
             
@@ -1398,8 +1418,11 @@ if all_inputs:
             if file_specific_stats:
                 st.markdown("##### 📄 Quick View: This File")
                 color_func = None
+                
+                # REFACTORED: OPTIMIZED SENTIMENT (Only Top 1000)
                 if enable_sentiment:
-                    sentiments = get_sentiments(analyzer, tuple(file_specific_stats.keys()))
+                    top_keys = [k for k,v in file_specific_stats.most_common(1000)]
+                    sentiments = get_sentiments(analyzer, tuple(top_keys))
                     color_func = create_sentiment_color_func(sentiments, pos_color, neg_color, neu_color, pos_threshold, neg_threshold)
                 
                 fig, _ = build_wordcloud_figure_from_counts(file_specific_stats, max_words, width, height, bg_color, colormap, combined_font_path, random_state, color_func)
@@ -1435,10 +1458,13 @@ if combined_counts:
     
     term_sentiments = {}
     if enable_sentiment:
-        term_sentiments = get_sentiments(analyzer, tuple(combined_counts.keys()))
+        # REFACTORED: OPTIMIZED SENTIMENT (Only Top 5000 terms)
+        top_keys = [k for k,v in combined_counts.most_common(5000)]
+        term_sentiments = get_sentiments(analyzer, tuple(top_keys))
         if compute_bigrams:
-            bigram_phrases = tuple(" ".join(bg) for bg in combined_bigrams.keys())
-            term_sentiments.update(get_sentiments(analyzer, bigram_phrases))
+            # Also get top bigrams
+            top_bg_keys = [" ".join(k) for k,v in combined_bigrams.most_common(2000)]
+            term_sentiments.update(get_sentiments(analyzer, tuple(top_bg_keys)))
 
     st.subheader("🔍 Bayesian Theme Discovery")
     # Extract model type from sidebar selection string
