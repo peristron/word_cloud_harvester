@@ -659,7 +659,7 @@ def render_workflow_guide():
     with st.expander("📘 App Guide & Workflow", expanded=False):
         st.markdown("""
         ### 🛠️ Choose Your Workflow
-        1. **Quick Analysis:** Upload <200MB files for instant visualization.
+        1. **Quick Analysis:** Upload <1GB files for instant visualization.
         2. **Deep Scan:** Use for large files. Runs in streaming mode.
         3. **Enterprise:** Use offline harvester for 10M+ rows.
         """)
