@@ -666,12 +666,12 @@ def render_workflow_guide():
         ### 🚀 1. Choose Your Workflow
 
         #### A. The "Quick Analysis" (Small/Medium Files)
-        *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs < 200MB.
+        *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs <1GB.
         *   **How:** Simply upload files in the sidebar. 
         *   **Result:** The app processes them immediately in memory. You get a "Quick View" Word Cloud for each file as it loads, followed by a master analysis of all files combined.
 
         #### B. The "Deep Scan" (Large Datasets)
-        *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
+        *   **Best for:** Large CSVs (>1GB) or massive text dumps.
         *   **How:** Upload the file, then click the **"⚡ Start Scan"** button that appears. 
         *   **Mechanism:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts statistics into a lightweight "Sketch," and immediately discards the raw text to save memory.
         *   **Benefit:** This allows you to process datasets larger than your available RAM.
