@@ -1152,7 +1152,18 @@ if all_inputs:
             process_chunk_iter(rows_iter, clean_conf, proc_conf, st.session_state['sketch'], mk_cb(approx), stats)
             
             bar.progress(100)
-            status.success("Scan Complete")
+            if sum(stats.values()) == 0:
+                status.warning("⚠️ Scan finished, but 0 valid tokens were found.")
+                st.markdown("""
+                **Why is the result empty?**
+                *   **Numeric Data:** Did you scan a column of ID numbers while 'Drop Integers' is checked in the sidebar?
+                *   **Strict Filters:** Are words shorter than 'Min Word Len' (default: 2)?
+                *   **Stopwords:** Did your custom stopwords remove everything?
+                
+                **Fix:** Adjust the **Processing** settings in the sidebar or select a different column (like 'Name' or 'Description').
+                """)
+            else:
+                status.success(f"Scan Complete! Captured {sum(stats.values()):,} tokens.")
             
             # Quick View
             if stats:
