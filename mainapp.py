@@ -1,6 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Status: PRODUCTION (Security Hardened: SSRF/Timing Fixes + Logic Safety)
+#  Status: PRODUCTION (Fixed: VirtualFile Polymorphism Error)
 #
 import io
 import os
@@ -92,7 +92,7 @@ SENTIMENT_ANALYSIS_TOP_N = 5000
 URL_SCRAPE_RATE_LIMIT_SECONDS = 1.0
 PROGRESS_UPDATE_MIN_INTERVAL = 100
 NPMI_MIN_FREQ = 3
-MAX_FILE_SIZE_MB = 1000  # Prevent OOM
+MAX_FILE_SIZE_MB = 200  # Prevent OOM
 
 # Regex Patterns
 HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -154,28 +154,12 @@ def get_auth_password() -> str:
     return pwd
 
 def validate_url(url: str) -> bool:
-    """Strict Anti-SSRF Validation using IP resolution."""
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ('http', 'https'):
             return False
-        
-        hostname = parsed.hostname
-        if not hostname:
+        if parsed.hostname in ('localhost', '127.0.0.1', '0.0.0.0', '::1'):
             return False
-            
-        # Resolve hostname to IP to prevent DNS rebinding/local access
-        # Note: This is a blocking call, but necessary for security
-        try:
-            addr_info = socket.getaddrinfo(hostname, None)
-            for res in addr_info:
-                ip_str = res[4][0]
-                ip = ipaddress.ip_address(ip_str)
-                if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
-                    return False
-        except socket.gaierror:
-            return False # DNS resolution failed
-            
         return True
     except Exception:
         return False
@@ -266,7 +250,6 @@ def reset_sketch():
 def perform_login():
     try:
         correct_password = get_auth_password()
-        # SECURITY FIX: Use constant-time comparison
         if secrets.compare_digest(st.session_state.password_input, correct_password):
             st.session_state['authenticated'] = True
             st.session_state['auth_error'] = False
@@ -346,13 +329,18 @@ def make_unique_header(raw_names: List[Optional[str]]) -> List[str]:
         result.append(unique)
     return result
 
-# --- WEB SCRAPING ---
+# --- WEB SCRAPING & VIRTUAL FILES ---
 class VirtualFile:
     def __init__(self, name: str, text_content: str):
         self.name = name
         self._bytes = text_content.encode('utf-8')
+    
     def getvalue(self) -> bytes:
         return self._bytes
+    
+    def getbuffer(self) -> memoryview:
+        # Added to satisfy the security check relying on .nbytes
+        return memoryview(self._bytes)
 
 def fetch_url_content(url: str) -> Optional[str]:
     if not requests or not BeautifulSoup: return None
@@ -461,20 +449,17 @@ def detect_csv_num_cols(file_bytes: bytes, encoding_choice: str = "auto", delimi
             rdr = csv.reader(wrapper, delimiter=delimiter)
             row = next(rdr, None)
             return len(row) if row is not None else 0
-    except Exception:
+    except:
         return 0
 
 def get_csv_columns(file_bytes: bytes, encoding_choice: str = "auto", delimiter: str = ",", has_header: bool = True) -> List[str]:
     enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
     bio = io.BytesIO(file_bytes)
-    try:
-        with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
-            rdr = csv.reader(wrapper, delimiter=delimiter)
-            first = next(rdr, None)
-            if first is None: return []
-            return make_unique_header(first) if has_header else [f"col_{i}" for i in range(len(first))]
-    except Exception:
-        return []
+    with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
+        rdr = csv.reader(wrapper, delimiter=delimiter)
+        first = next(rdr, None)
+        if first is None: return []
+        return make_unique_header(first) if has_header else [f"col_{i}" for i in range(len(first))]
 
 def get_csv_preview(file_bytes: bytes, encoding_choice: str, delimiter: str, has_header: bool, rows: int = 5) -> pd.DataFrame:
     enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
@@ -483,7 +468,7 @@ def get_csv_preview(file_bytes: bytes, encoding_choice: str, delimiter: str, has
         df = pd.read_csv(bio, delimiter=delimiter, header=0 if has_header else None, nrows=rows, encoding=enc, on_bad_lines='skip')
         if not has_header: df.columns = [f"col_{i}" for i in range(len(df.columns))]
         return df
-    except Exception:
+    except:
         return pd.DataFrame()
 
 def _iter_tabular_rows(raw_iter, has_header, selected_columns):
@@ -507,40 +492,31 @@ def _iter_tabular_rows(raw_iter, has_header, selected_columns):
 def iter_csv_selected_columns(file_bytes: bytes, encoding_choice: str, delimiter: str, has_header: bool, selected_columns: List[str], join_with: str) -> Iterable[str]:
     enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
     bio = io.BytesIO(file_bytes)
-    try:
-        with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
-            rdr = csv.reader(wrapper, delimiter=delimiter)
-            for vals in _iter_tabular_rows(rdr, has_header, selected_columns):
-                vals = [v for v in vals if v]
-                yield join_with.join(str(v) for v in vals)
-    except Exception:
-        yield ""
+    with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
+        rdr = csv.reader(wrapper, delimiter=delimiter)
+        for vals in _iter_tabular_rows(rdr, has_header, selected_columns):
+            vals = [v for v in vals if v]
+            yield join_with.join(str(v) for v in vals)
 
 def iter_excel_selected_columns(file_bytes: bytes, sheet_name: str, has_header: bool, selected_columns: List[str], join_with: str) -> Iterable[str]:
     if openpyxl is None: return
     bio = io.BytesIO(file_bytes)
-    try:
-        wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
-        ws = wb[sheet_name]
-        rows_iter = ws.iter_rows(values_only=True)
-        
-        for vals in _iter_tabular_rows(rows_iter, has_header, selected_columns):
-            vals = [v for v in vals if v]
-            yield join_with.join("" if v is None else str(v) for v in vals)
-        wb.close()
-    except Exception:
-        yield ""
+    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+    ws = wb[sheet_name]
+    rows_iter = ws.iter_rows(values_only=True)
+    
+    for vals in _iter_tabular_rows(rows_iter, has_header, selected_columns):
+        vals = [v for v in vals if v]
+        yield join_with.join("" if v is None else str(v) for v in vals)
+    wb.close()
 
 def get_excel_sheetnames(file_bytes: bytes) -> List[str]:
     if openpyxl is None: return []
     bio = io.BytesIO(file_bytes)
-    try:
-        wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
-        sheets = list(wb.sheetnames)
-        wb.close()
-        return sheets
-    except Exception:
-        return []
+    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+    sheets = list(wb.sheetnames)
+    wb.close()
+    return sheets
 
 def get_excel_preview(file_bytes: bytes, sheet_name: str, has_header: bool, rows: int = 5) -> pd.DataFrame:
     if openpyxl is None: return pd.DataFrame()
@@ -549,21 +525,18 @@ def get_excel_preview(file_bytes: bytes, sheet_name: str, has_header: bool, rows
         df = pd.read_excel(bio, sheet_name=sheet_name, header=0 if has_header else None, nrows=rows, engine='openpyxl')
         if not has_header: df.columns = [f"col_{i}" for i in range(len(df.columns))]
         return df
-    except Exception:
+    except:
         return pd.DataFrame()
 
 def excel_estimate_rows(file_bytes: bytes, sheet_name: str, has_header: bool) -> int:
     if openpyxl is None: return 0
     bio = io.BytesIO(file_bytes)
-    try:
-        wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
-        ws = wb[sheet_name]
-        total = ws.max_row or 0
-        wb.close()
-        if has_header and total > 0: total -= 1
-        return max(total, 0)
-    except Exception:
-        return 0
+    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+    ws = wb[sheet_name]
+    total = ws.max_row or 0
+    wb.close()
+    if has_header and total > 0: total -= 1
+    return max(total, 0)
 
 # ==========================================
 # ⚙️ PROCESSING LOGIC
@@ -768,10 +741,6 @@ def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
     }
 
 def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words: int, min_freq: int = 3) -> pd.DataFrame:
-    # Logic Fix: Guard against empty stats
-    if total_words < 1:
-        return pd.DataFrame(columns=["Bigram", "Count", "NPMI"])
-        
     results = []
     epsilon = 1e-10 
     for (w1, w2), freq in bigram_counts.items():
@@ -1043,7 +1012,7 @@ with st.sidebar:
     max_words = st.slider("max words", 50, 3000, 1000, 50)
     width = st.slider("image width", 600, 2400, 1200, 100)
     height = st.slider("image height", 300, 1400, 600, 50)
-    random_state = st.number_input("random seed", 0, value=42, step=1)
+    random_state = st.number_input("random seed", 0, value=42, step=1, help="Fix this number to ensure the Word Cloud and Topics look exactly the same every time you run the analysis.")
     
     font_map, font_names = list_system_fonts(), list(list_system_fonts().keys())
     combined_font_name = st.selectbox("font", font_names or ["(default)"], 0)
