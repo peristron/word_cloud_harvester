@@ -1,6 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Status: PRODUCTION (Fixed: AI Cost Tracking + Added: Free-form Q&A)
+#  Status: PRODUCTION (Fixed: Missing Helper Function + Full Feature Set)
 #
 import io
 import os
@@ -666,12 +666,12 @@ def render_workflow_guide():
         ### 🚀 1. Choose Your Workflow
 
         #### A. The "Quick Analysis" (Small/Medium Files)
-        *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs <1GB.
+        *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs < 200MB.
         *   **How:** Simply upload files in the sidebar. 
         *   **Result:** The app processes them immediately in memory. You get a "Quick View" Word Cloud for each file as it loads, followed by a master analysis of all files combined.
 
         #### B. The "Deep Scan" (Large Datasets)
-        *   **Best for:** Large CSVs (>1GB) or massive text dumps.
+        *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
         *   **How:** Upload the file, then click the **"⚡ Start Scan"** button that appears. 
         *   **Mechanism:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts statistics into a lightweight "Sketch," and immediately discards the raw text to save memory.
         *   **Benefit:** This allows you to process datasets larger than your available RAM.
@@ -811,6 +811,7 @@ def create_sentiment_color_func(sentiments: Dict[str, float], pos_color, neg_col
         else: return neu_color
     return color_func
 
+# --- RESTORED HELPER FUNCTION ---
 def get_sentiment_category(score: float, pos_threshold: float, neg_threshold: float) -> str:
     if score >= pos_threshold: return "Positive"
     if score <= neg_threshold: return "Negative"
@@ -853,16 +854,18 @@ def call_llm_and_track_cost(system_prompt: str, user_prompt: str, config: dict):
         # Calculate Cost
         in_tok = 0
         out_tok = 0
+        
+        # Standard OpenAI Usage
         if hasattr(response, 'usage') and response.usage:
             in_tok = response.usage.prompt_tokens
             out_tok = response.usage.completion_tokens
-            
-            # Cost calculation (Price per 1M tokens)
-            cost = (in_tok * config['price_in'] / 1_000_000) + (out_tok * config['price_out'] / 1_000_000)
-            
-            # Update Session State
-            st.session_state['total_tokens'] += (in_tok + out_tok)
-            st.session_state['total_cost'] += cost
+        
+        # Cost calculation (Price per 1M tokens)
+        cost = (in_tok * config['price_in'] / 1_000_000) + (out_tok * config['price_out'] / 1_000_000)
+        
+        # Update Session State
+        st.session_state['total_tokens'] += (in_tok + out_tok)
+        st.session_state['total_cost'] += cost
             
         return response.choices[0].message.content
         
@@ -1441,7 +1444,7 @@ if combined_counts and st.session_state['authenticated']:
     # 2. Free Form Question
     with col_ai_2:
         st.markdown("**2. Ask the Data**")
-        user_question = st.text_area("Ask a specific question:", height=100, placeholder="e.g., 'What are the main concerns about...whatever?'")
+        user_question = st.text_area("Ask a specific question:", height=100, placeholder="e.g., 'What are the main complaints about pricing?'")
         if st.button("Ask Question"):
             if user_question.strip():
                 with st.status("Thinking...", expanded=True):
