@@ -964,24 +964,24 @@ with st.sidebar:
     
     st.markdown("### 🧹 Cleaning")
     clean_conf = CleaningConfig(
-        remove_chat=st.checkbox("Remove Chat Artifacts", True),
-        remove_html=st.checkbox("Remove HTML", True),
-        remove_urls=st.checkbox("Remove URLs", True),
-        unescape=st.checkbox("Unescape HTML", True)
+        remove_chat=st.checkbox("Remove Chat Artifacts", True, help="Removes timestamps, 'Reply' buttons, and other chat log noise."),
+        remove_html=st.checkbox("Remove HTML", True, help="Strips tags like <div> or <br>."),
+        remove_urls=st.checkbox("Remove URLs", True, help="Replaces http/https links and emails with a placeholder."),
+        unescape=st.checkbox("Unescape HTML", True, help="Converts '&amp;' back to '&'.")
     )
     
     st.markdown("### 🛑 Stopwords")
-    user_sw = st.text_area("Stopwords (comma-separated)", "firstname.lastname, jane doe")
+    user_sw = st.text_area("Stopwords (comma-separated)", "firstname.lastname, jane doe", help="Words to ignore. You can enter single words or full phrases.")
     phrases, singles = parse_user_stopwords(user_sw)
     clean_conf.phrase_pattern = build_phrase_pattern(phrases)
     stopwords = set(STOPWORDS).union(singles)
-    if st.checkbox("Remove Prepositions", True): stopwords.update(default_prepositions())
+    if st.checkbox("Remove Prepositions", True, help="Removes common words like 'at', 'on', 'in', 'to'."): stopwords.update(default_prepositions())
     
     st.markdown("### ⚙️ Processing")
     proc_conf = ProcessingConfig(
-        min_word_len=st.slider("Min Word Len", 1, 10, 2),
-        drop_integers=st.checkbox("Drop Integers", True),
-        compute_bigrams=st.checkbox("Bigrams", True),
+        min_word_len=st.slider("Min Word Len", 1, 10, 2, help="Ignore words shorter than this. Useful to remove noise like 'id', 'go', 'ok' if not in stopwords."),
+        drop_integers=st.checkbox("Drop Integers", True, help="Removes standalone numbers (e.g., '2023', '42'). Keeps alphanumerics like 'Model3'."),
+        compute_bigrams=st.checkbox("Bigrams", True, help="Counts pairs of words (e.g., 'Data Science') in addition to single words."),
         translate_map=build_punct_translation(st.checkbox("Keep Hyphens"), st.checkbox("Keep Apostrophes")),
         stopwords=stopwords
     )
@@ -989,10 +989,10 @@ with st.sidebar:
     st.markdown("### 🎨 Appearance")
     bg_color = st.color_picker("background color", value="#ffffff")
     colormap = st.selectbox("colormap", options=["viridis", "plasma", "inferno", "magma", "cividis", "tab10", "tab20", "Dark2", "Set3", "rainbow", "cubehelix", "prism", "Blues", "Greens", "Oranges", "Reds", "Purples", "Greys"], index=0)
-    max_words = st.slider("max words", 50, 3000, 1000, 50)
+    max_words = st.slider("max words", 50, 3000, 1000, 50, help="Maximum number of words to draw in the cloud.")
     width = st.slider("image width", 600, 2400, 1200, 100)
     height = st.slider("image height", 300, 1400, 600, 50)
-    random_state = st.number_input("random seed", 0, value=42, step=1)
+    random_state = st.number_input("random seed", 0, value=42, step=1, help="Fixes the layout. If you use the same seed, the Word Cloud will look identical every time. Change it to 'shuffle' the layout.")
     
     font_map, font_names = list_system_fonts(), list(list_system_fonts().keys())
     combined_font_name = st.selectbox("font", font_names or ["(default)"], 0)
@@ -1002,7 +1002,7 @@ with st.sidebar:
     top_n = st.number_input("Top Terms to Display", min_value=5, max_value=1000, value=20)
 
     st.markdown("### 🔬 Sentiment")
-    enable_sentiment = st.checkbox("Enable Sentiment", False)
+    enable_sentiment = st.checkbox("Enable Sentiment", False, help="Requires NLTK. Colors words by positive/negative tone.")
     if enable_sentiment and analyzer is None:
         st.error("NLTK not found.")
         enable_sentiment = False
@@ -1010,14 +1010,14 @@ with st.sidebar:
     pos_threshold, neg_threshold, pos_color, neu_color, neg_color = 0.05, -0.05, '#2ca02c', '#808080', '#d62728'
     if enable_sentiment:
         c1, c2 = st.columns(2)
-        with c1: pos_threshold = st.slider("pos threshold", 0.0, 1.0, 0.05, 0.01)
-        with c2: neg_threshold = st.slider("neg threshold", -1.0, 0.0, -0.05, 0.01)
+        with c1: pos_threshold = st.slider("pos threshold", 0.0, 1.0, 0.05, 0.01, help="Scores above this are Positive.")
+        with c2: neg_threshold = st.slider("neg threshold", -1.0, 0.0, -0.05, 0.01, help="Scores below this are Negative.")
         c1, c2, c3 = st.columns(3)
         with c1: pos_color = st.color_picker("pos color", value=pos_color)
         with c2: neu_color = st.color_picker("neu color", value=neu_color)
         with c3: neg_color = st.color_picker("neg color", value=neg_color)
 
-    doc_granularity = st.select_slider("Rows per Doc", options=[1, 5, 10, 100, 500], value=5)
+    doc_granularity = st.select_slider("Rows per Doc", options=[1, 5, 10, 100, 500], value=5, help="CRITICAL: How many rows of your file equal one 'document' for the AI? \n1 = Analysis line-by-line (fine detail).\n100 = Analysis by chunks (broad themes).")
     st.session_state['sketch'].set_batch_size(doc_granularity)
     
     if 'last_gran' not in st.session_state: st.session_state['last_gran'] = doc_granularity
@@ -1027,8 +1027,8 @@ with st.sidebar:
             st.warning("Granularity changed. Data reset.")
         st.session_state['last_gran'] = doc_granularity
 
-    topic_model_type = st.selectbox("Topic Model", ["LDA", "NMF"])
-    n_topics = st.slider("Topics", 2, 10, 4)
+    topic_model_type = st.selectbox("Topic Model", ["LDA", "NMF"], help="LDA: Best for longer text with mixed topics.\nNMF: Best for short, distinct text (like support tickets).")
+    n_topics = st.slider("Topics", 2, 10, 4, help="How many distinct themes should the algorithm attempt to find?")
 
 # --- REFINERY UTILITY ---
 with st.expander("🛠️ Data Refinery"):
