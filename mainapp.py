@@ -1,6 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Status: PRODUCTION (Security Hardened + Full Feature Set)
+#  Status: PRODUCTION (Security Hardened + Full Feature Set + Full Documentation)
 #
 import io
 import os
@@ -695,14 +695,9 @@ def perform_refinery_job(file_obj, chunk_size, clean_conf: CleaningConfig):
 # 📊 ANALYTICS
 # ==========================================
 
-def render_interpretation_guide():
-    with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=False):
+def render_workflow_guide():
+    with st.expander("📘 App Guide & Workflow", expanded=False):
         st.markdown("""
-        ### 🌟 What is this?
-        This is an **Unstructured Data Intelligence Engine**. It is designed to take "dirty," raw text (from logs, surveys, transcripts, or documents) and extract mathematical structure, semantic meaning, and qualitative insights.
-
-        ---
-
         ### 🛠️ Choose Your Workflow
 
         #### 1. The "Quick Analysis" Workflow (Small/Medium Files)
@@ -718,34 +713,45 @@ def render_interpretation_guide():
         #### 3. The "Enterprise" Workflow (Offline Harvesting)
         *   **Best for:** Massive corporate datasets (10M+ rows) or sensitive data that cannot leave your secure server.
         *   **How:** Use the **Offline Harvester** script (found below) to process data locally. It produces a `.json` file containing only math/statistics (no raw text) which you can upload here.
-
-        ---
-
-        ### 🧠 The Analytical Engines
-
-        #### 🕸️ Network Graph & Community Detection
-        *   **Concept:** Maps how words connect. Colors represent clusters of topics.
-        *   **Value:** If distinct clusters appear, you have successfully separated different conversations (e.g., "Login Issues" vs. "Billing Issues").
-
-        #### 🔥 Heatmap & Phrase Significance (NPMI)
-        *   **Heatmap:** Visualizes the "neighborhood" of your top terms. See exactly how often "Battery" appears next to "Drain" vs "Charger."
-        *   **NPMI (Normalized Pointwise Mutual Information):** A statistical score that separates **Meaningful Phrases** (e.g., "Artificial Intelligence") from **Random Noise** (e.g., "of the").
-
-        #### 🔍 Bayesian Theme Discovery (Topic Modeling)
-        *   **LDA:** Best for essays/assignments (assumes mixed topics).
-        *   **NMF:** Best for chat logs/tickets (assumes distinct categories).
-        *   *Note:* Uses a safety cap (50k docs) to prevent memory crashes on massive files.
-
-        #### ⚖️ Bayesian Sentiment Inference
-        *   **The Value:** Calculates a **Credible Interval** (e.g., "We are 95% confident the positive rate is between 55-65%") rather than a raw average, protecting you from small-sample bias.
-
-        ---
-
+        
         ### ⚡ Utility: The Data Refinery
         *   **Purpose:** Clean and split massive files that Excel can't open.
-        *   **Consistency:** It now uses the **exact same** cleaning logic (Regex, URL removal, Stopwords) as the analysis engine.
         *   **Output:** A ZIP file of clean, Excel-ready CSV chunks.
         """)
+
+def render_analyst_help():
+    with st.expander("🎓 Analyst's Guide: Interpreting Results", expanded=False):
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "😕 Graph vs. Topics Disagree", 
+            "🌫️ Giant 'Blob' Graph", 
+            "🔍 Topics Look Mixed", 
+            "📉 Too Few Results"
+        ])
+        
+        with tab1:
+            st.markdown("""
+            **Symptom:** The Network Graph shows clear clusters, but the Topic Model (NMF/LDA) lumps them into one topic.
+            **The Cause:** The Graph acts like a **Filter** (hiding weak connections), while the Topic Model acts like a **Sponge** (absorbing all connections).
+            **The Fix:** Check for 'bridge' words that appear in both topics. Lower the 'Rows per Document' setting to 1.
+            """)
+        with tab2:
+            st.markdown("""
+            **Symptom:** The Graph is a tangled hairball.
+            **The Cause:** Your data is homogenous (everything is related).
+            **The Fix:** Increase 'Min Link Frequency' to cut weak ties. Increase 'Repulsion' in Graph Physics.
+            """)
+        with tab3:
+            st.markdown("""
+            **Symptom:** Topic 1 and 2 look identical.
+            **The Cause:** Not enough data or documents are too short.
+            **The Fix:** Increase 'Rows per Document' to group sentences together. Switch from NMF to LDA.
+            """)
+        with tab4:
+            st.markdown("""
+            **Symptom:** Empty results.
+            **The Cause:** Cleaning rules are too strict.
+            **The Fix:** Remove custom stopwords. Lower 'Top Terms Count'.
+            """)
 
 def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
     total_tokens = sum(counts.values())
@@ -914,7 +920,7 @@ def generate_ai_insights(counts: Counter, bigrams: Counter, config: dict, graph_
 st.set_page_config(page_title="Intel Engine", layout="wide")
 st.title("🧠 Intel Engine: Unstructured Data Analytics")
 
-render_interpretation_guide()
+render_workflow_guide() # Call updated guide
 analyzer = setup_sentiment_analyzer()
 
 # --- SIDEBAR ---
@@ -1211,7 +1217,9 @@ if all_inputs:
             
             if not clear_on_scan: st.rerun()
 
-# --- ANALYSIS ---
+# ----------------------------
+# ANALYSIS PHASE (Reads from Sketch)
+# ---------------------------
 scanner = st.session_state['sketch']
 combined_counts = scanner.global_counts
 combined_bigrams = scanner.global_bigrams
@@ -1219,6 +1227,7 @@ combined_bigrams = scanner.global_bigrams
 if combined_counts:
     st.divider()
     st.header("📊 Analysis Phase")
+    render_analyst_help() # Re-introduced Analyst Help Tabs
     
     # NEW: SKETCH EXPORT
     st.download_button(
@@ -1243,6 +1252,17 @@ if combined_counts:
 
     st.subheader("🔍 Bayesian Theme Discovery")
     
+    # Re-introduced Topic Modeling Context
+    with st.expander(f"🤔 How this works ({topic_model_type}) & Troubleshooting", expanded=False):
+        n_docs = len(scanner.topic_docs)
+        st.markdown(f"**Analysis Basis:** The model is learning from **{n_docs} synthetic documents** generated during the scan.")
+        if n_docs < 10:
+            st.warning("⚠️ **Low Resolution:** Very few documents. Decrease 'Rows per Document' to 1 for better results.")
+        if topic_model_type == "LDA":
+            st.markdown("**LDA** assumes documents are mixtures of topics. Best for long text.")
+        else:
+            st.markdown("**NMF** assumes documents belong to distinct topics. Best for short text.")
+
     if len(scanner.topic_docs) > 0 and DictVectorizer:
         with st.spinner(f"Running {topic_model_type} Topic Modeling..."):
             topics = perform_topic_modeling(scanner.topic_docs, n_topics, topic_model_type)
