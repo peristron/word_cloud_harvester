@@ -1,6 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Status: PRODUCTION (Fixed: Missing Helper Function + Full Feature Set)
+#  Status: PRODUCTION (Security Hardened: SSRF/Timing Fixes + Logic Safety)
 #
 import io
 import os
@@ -15,6 +15,9 @@ import string
 import zipfile
 import tempfile
 import logging
+import secrets
+import socket
+import ipaddress
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from collections import Counter
@@ -89,6 +92,7 @@ SENTIMENT_ANALYSIS_TOP_N = 5000
 URL_SCRAPE_RATE_LIMIT_SECONDS = 1.0
 PROGRESS_UPDATE_MIN_INTERVAL = 100
 NPMI_MIN_FREQ = 3
+MAX_FILE_SIZE_MB = 1000  # Prevent OOM
 
 # Regex Patterns
 HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -150,12 +154,28 @@ def get_auth_password() -> str:
     return pwd
 
 def validate_url(url: str) -> bool:
+    """Strict Anti-SSRF Validation using IP resolution."""
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ('http', 'https'):
             return False
-        if parsed.hostname in ('localhost', '127.0.0.1', '0.0.0.0', '::1'):
+        
+        hostname = parsed.hostname
+        if not hostname:
             return False
+            
+        # Resolve hostname to IP to prevent DNS rebinding/local access
+        # Note: This is a blocking call, but necessary for security
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+            for res in addr_info:
+                ip_str = res[4][0]
+                ip = ipaddress.ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                    return False
+        except socket.gaierror:
+            return False # DNS resolution failed
+            
         return True
     except Exception:
         return False
@@ -235,16 +255,19 @@ if 'total_tokens' not in st.session_state: st.session_state['total_tokens'] = 0
 if 'authenticated' not in st.session_state: st.session_state['authenticated'] = False
 if 'auth_error' not in st.session_state: st.session_state['auth_error'] = False
 if 'ai_response' not in st.session_state: st.session_state['ai_response'] = ""
+if 'last_sketch_hash' not in st.session_state: st.session_state['last_sketch_hash'] = None
 
 def reset_sketch():
     st.session_state['sketch'] = StreamScanner()
     st.session_state['ai_response'] = ""
+    st.session_state['last_sketch_hash'] = None
     gc.collect()
 
 def perform_login():
     try:
         correct_password = get_auth_password()
-        if st.session_state.password_input == correct_password:
+        # SECURITY FIX: Use constant-time comparison
+        if secrets.compare_digest(st.session_state.password_input, correct_password):
             st.session_state['authenticated'] = True
             st.session_state['auth_error'] = False
             st.session_state['password_input'] = ""
@@ -335,7 +358,7 @@ def fetch_url_content(url: str) -> Optional[str]:
     if not requests or not BeautifulSoup: return None
     
     if not validate_url(url):
-        st.toast(f"Blocked invalid/unsafe URL: {url}", icon="🛡️")
+        st.toast(f"Blocked unsafe/invalid URL: {url}", icon="🛡️")
         return None
         
     try:
@@ -360,8 +383,11 @@ def read_rows_raw_lines(file_bytes: bytes, encoding_choice: str = "auto") -> Ite
         bio = io.BytesIO(file_bytes)
         with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline=None) as wrapper:
             for line in wrapper: yield line.rstrip("\r\n")
-    if encoding_choice == "latin-1": yield from _iter("latin-1")
-    else: yield from _iter("utf-8")
+    try:
+        if encoding_choice == "latin-1": yield from _iter("latin-1")
+        else: yield from _iter("utf-8")
+    except UnicodeDecodeError:
+        yield "" # Skip bad blocks
 
 def read_rows_vtt(file_bytes: bytes, encoding_choice: str = "auto") -> Iterable[str]:
     for line in read_rows_raw_lines(file_bytes, encoding_choice):
@@ -435,17 +461,20 @@ def detect_csv_num_cols(file_bytes: bytes, encoding_choice: str = "auto", delimi
             rdr = csv.reader(wrapper, delimiter=delimiter)
             row = next(rdr, None)
             return len(row) if row is not None else 0
-    except:
+    except Exception:
         return 0
 
 def get_csv_columns(file_bytes: bytes, encoding_choice: str = "auto", delimiter: str = ",", has_header: bool = True) -> List[str]:
     enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
     bio = io.BytesIO(file_bytes)
-    with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
-        rdr = csv.reader(wrapper, delimiter=delimiter)
-        first = next(rdr, None)
-        if first is None: return []
-        return make_unique_header(first) if has_header else [f"col_{i}" for i in range(len(first))]
+    try:
+        with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
+            rdr = csv.reader(wrapper, delimiter=delimiter)
+            first = next(rdr, None)
+            if first is None: return []
+            return make_unique_header(first) if has_header else [f"col_{i}" for i in range(len(first))]
+    except Exception:
+        return []
 
 def get_csv_preview(file_bytes: bytes, encoding_choice: str, delimiter: str, has_header: bool, rows: int = 5) -> pd.DataFrame:
     enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
@@ -454,7 +483,7 @@ def get_csv_preview(file_bytes: bytes, encoding_choice: str, delimiter: str, has
         df = pd.read_csv(bio, delimiter=delimiter, header=0 if has_header else None, nrows=rows, encoding=enc, on_bad_lines='skip')
         if not has_header: df.columns = [f"col_{i}" for i in range(len(df.columns))]
         return df
-    except:
+    except Exception:
         return pd.DataFrame()
 
 def _iter_tabular_rows(raw_iter, has_header, selected_columns):
@@ -478,31 +507,40 @@ def _iter_tabular_rows(raw_iter, has_header, selected_columns):
 def iter_csv_selected_columns(file_bytes: bytes, encoding_choice: str, delimiter: str, has_header: bool, selected_columns: List[str], join_with: str) -> Iterable[str]:
     enc = "latin-1" if encoding_choice == "latin-1" else "utf-8"
     bio = io.BytesIO(file_bytes)
-    with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
-        rdr = csv.reader(wrapper, delimiter=delimiter)
-        for vals in _iter_tabular_rows(rdr, has_header, selected_columns):
-            vals = [v for v in vals if v]
-            yield join_with.join(str(v) for v in vals)
+    try:
+        with io.TextIOWrapper(bio, encoding=enc, errors="replace", newline="") as wrapper:
+            rdr = csv.reader(wrapper, delimiter=delimiter)
+            for vals in _iter_tabular_rows(rdr, has_header, selected_columns):
+                vals = [v for v in vals if v]
+                yield join_with.join(str(v) for v in vals)
+    except Exception:
+        yield ""
 
 def iter_excel_selected_columns(file_bytes: bytes, sheet_name: str, has_header: bool, selected_columns: List[str], join_with: str) -> Iterable[str]:
     if openpyxl is None: return
     bio = io.BytesIO(file_bytes)
-    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
-    ws = wb[sheet_name]
-    rows_iter = ws.iter_rows(values_only=True)
-    
-    for vals in _iter_tabular_rows(rows_iter, has_header, selected_columns):
-        vals = [v for v in vals if v]
-        yield join_with.join("" if v is None else str(v) for v in vals)
-    wb.close()
+    try:
+        wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+        ws = wb[sheet_name]
+        rows_iter = ws.iter_rows(values_only=True)
+        
+        for vals in _iter_tabular_rows(rows_iter, has_header, selected_columns):
+            vals = [v for v in vals if v]
+            yield join_with.join("" if v is None else str(v) for v in vals)
+        wb.close()
+    except Exception:
+        yield ""
 
 def get_excel_sheetnames(file_bytes: bytes) -> List[str]:
     if openpyxl is None: return []
     bio = io.BytesIO(file_bytes)
-    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
-    sheets = list(wb.sheetnames)
-    wb.close()
-    return sheets
+    try:
+        wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+        sheets = list(wb.sheetnames)
+        wb.close()
+        return sheets
+    except Exception:
+        return []
 
 def get_excel_preview(file_bytes: bytes, sheet_name: str, has_header: bool, rows: int = 5) -> pd.DataFrame:
     if openpyxl is None: return pd.DataFrame()
@@ -511,18 +549,21 @@ def get_excel_preview(file_bytes: bytes, sheet_name: str, has_header: bool, rows
         df = pd.read_excel(bio, sheet_name=sheet_name, header=0 if has_header else None, nrows=rows, engine='openpyxl')
         if not has_header: df.columns = [f"col_{i}" for i in range(len(df.columns))]
         return df
-    except:
+    except Exception:
         return pd.DataFrame()
 
 def excel_estimate_rows(file_bytes: bytes, sheet_name: str, has_header: bool) -> int:
     if openpyxl is None: return 0
     bio = io.BytesIO(file_bytes)
-    wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
-    ws = wb[sheet_name]
-    total = ws.max_row or 0
-    wb.close()
-    if has_header and total > 0: total -= 1
-    return max(total, 0)
+    try:
+        wb = openpyxl.load_workbook(bio, read_only=True, data_only=True)
+        ws = wb[sheet_name]
+        total = ws.max_row or 0
+        wb.close()
+        if has_header and total > 0: total -= 1
+        return max(total, 0)
+    except Exception:
+        return 0
 
 # ==========================================
 # ⚙️ PROCESSING LOGIC
@@ -678,7 +719,7 @@ def render_workflow_guide():
 
         #### C. The "Enterprise" Workflow (Offline/Secure)
         *   **Best for:** Massive datasets (10M+ rows) or sensitive data (PII) that cannot leave your secure server.
-        *   **How:** Use the **Harvester Script** (found in the "Enterprise" expander below) to process data locally on your secure machine. It generates a `.json` Sketch file containing only math/counts (no raw text). Upload that JSON here to visualize it.
+        *   **How:** Use the **Harvester Script** (found in the "Enterprise" expander below) to process data locally. It generates a `.json` Sketch file containing only math/counts (no raw text). Upload that JSON here to visualize it.
 
         ---
 
@@ -727,6 +768,10 @@ def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
     }
 
 def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words: int, min_freq: int = 3) -> pd.DataFrame:
+    # Logic Fix: Guard against empty stats
+    if total_words < 1:
+        return pd.DataFrame(columns=["Bigram", "Count", "NPMI"])
+        
     results = []
     epsilon = 1e-10 
     for (w1, w2), freq in bigram_counts.items():
@@ -892,11 +937,17 @@ with st.sidebar:
     st.divider()
     with st.expander("🌐 Web/Text Import"):
         sketch_upload = st.file_uploader("Import Sketch (.json)", type=["json"])
+        
+        # LOGIC FIX: Hash check for Sketch Upload
         if sketch_upload:
-            if st.session_state['sketch'].load_from_json(sketch_upload.getvalue().decode('utf-8')):
-                st.success("Loaded!")
-            else:
-                st.error("Invalid Sketch")
+            file_hash = hash(sketch_upload.getvalue())
+            if st.session_state.get('last_sketch_hash') != file_hash:
+                if st.session_state['sketch'].load_from_json(sketch_upload.getvalue().decode('utf-8')):
+                    st.session_state['last_sketch_hash'] = file_hash
+                    st.success("Sketch Loaded Successfully!")
+                else:
+                    st.error("Invalid Sketch File")
+
         url_input = st.text_area("URLs (one per line)")
         manual_input = st.text_area("Manual Text")
         
@@ -964,24 +1015,24 @@ with st.sidebar:
     
     st.markdown("### 🧹 Cleaning")
     clean_conf = CleaningConfig(
-        remove_chat=st.checkbox("Remove Chat Artifacts", True, help="Removes timestamps, 'Reply' buttons, and other chat log noise."),
-        remove_html=st.checkbox("Remove HTML", True, help="Strips tags like <div> or <br>."),
-        remove_urls=st.checkbox("Remove URLs", True, help="Replaces http/https links and emails with a placeholder."),
-        unescape=st.checkbox("Unescape HTML", True, help="Converts '&amp;' back to '&'.")
+        remove_chat=st.checkbox("Remove Chat Artifacts", True),
+        remove_html=st.checkbox("Remove HTML", True),
+        remove_urls=st.checkbox("Remove URLs", True),
+        unescape=st.checkbox("Unescape HTML", True)
     )
     
     st.markdown("### 🛑 Stopwords")
-    user_sw = st.text_area("Stopwords (comma-separated)", "firstname.lastname, jane doe", help="Words to ignore. You can enter single words or full phrases.")
+    user_sw = st.text_area("Stopwords (comma-separated)", "firstname.lastname, jane doe")
     phrases, singles = parse_user_stopwords(user_sw)
     clean_conf.phrase_pattern = build_phrase_pattern(phrases)
     stopwords = set(STOPWORDS).union(singles)
-    if st.checkbox("Remove Prepositions", True, help="Removes common words like 'at', 'on', 'in', 'to'."): stopwords.update(default_prepositions())
+    if st.checkbox("Remove Prepositions", True): stopwords.update(default_prepositions())
     
     st.markdown("### ⚙️ Processing")
     proc_conf = ProcessingConfig(
-        min_word_len=st.slider("Min Word Length", 1, 10, 2, help="Ignore words shorter than this. Useful to remove noise like 'id', 'go', 'ok' if not in stopwords."),
-        drop_integers=st.checkbox("Drop Integers", True, help="Removes standalone numbers (e.g., '2023', '42'). Keeps alphanumerics like 'Model3'."),
-        compute_bigrams=st.checkbox("Bigrams", True, help="Counts pairs of words (e.g., 'Data Science') in addition to single words."),
+        min_word_len=st.slider("Min Word Len", 1, 10, 2, help="Ignore words shorter than this (e.g., set to 3 to skip 'is', 'it', 'at')."),
+        drop_integers=st.checkbox("Drop Integers", True, help="Remove numbers (e.g., IDs, Years). Uncheck if you are analyzing numeric data."),
+        compute_bigrams=st.checkbox("Bigrams", True, help="Count pairs of words (e.g., 'customer service') as distinct units."),
         translate_map=build_punct_translation(st.checkbox("Keep Hyphens"), st.checkbox("Keep Apostrophes")),
         stopwords=stopwords
     )
@@ -989,20 +1040,20 @@ with st.sidebar:
     st.markdown("### 🎨 Appearance")
     bg_color = st.color_picker("background color", value="#ffffff")
     colormap = st.selectbox("colormap", options=["viridis", "plasma", "inferno", "magma", "cividis", "tab10", "tab20", "Dark2", "Set3", "rainbow", "cubehelix", "prism", "Blues", "Greens", "Oranges", "Reds", "Purples", "Greys"], index=0)
-    max_words = st.slider("max words", 50, 3000, 1000, 50, help="Maximum number of words to draw in the cloud.")
+    max_words = st.slider("max words", 50, 3000, 1000, 50)
     width = st.slider("image width", 600, 2400, 1200, 100)
     height = st.slider("image height", 300, 1400, 600, 50)
-    random_state = st.number_input("random seed", 0, value=42, step=1, help="The seed controls the randomness. Same number = same image. Change this number to generate a new, random layout")
+    random_state = st.number_input("random seed", 0, value=42, step=1)
     
     font_map, font_names = list_system_fonts(), list(list_system_fonts().keys())
     combined_font_name = st.selectbox("font", font_names or ["(default)"], 0)
     combined_font_path = font_map.get(combined_font_name) if font_names else None
 
     st.markdown("### 📊 Tables")
-    top_n = st.number_input("Top Terms to Display", min_value=5, max_value=1000, value=20)
+    top_n = st.number_input("Top Terms to Display", min_value=5, max_value=1000, value=20, help="Controls how many rows appear in the frequency tables below.")
 
     st.markdown("### 🔬 Sentiment")
-    enable_sentiment = st.checkbox("Enable Sentiment", False, help="Requires NLTK. Colors words by positive/negative tone.")
+    enable_sentiment = st.checkbox("Enable Sentiment", False)
     if enable_sentiment and analyzer is None:
         st.error("NLTK not found.")
         enable_sentiment = False
@@ -1010,14 +1061,14 @@ with st.sidebar:
     pos_threshold, neg_threshold, pos_color, neu_color, neg_color = 0.05, -0.05, '#2ca02c', '#808080', '#d62728'
     if enable_sentiment:
         c1, c2 = st.columns(2)
-        with c1: pos_threshold = st.slider("pos threshold", 0.0, 1.0, 0.05, 0.01, help="Scores above this are Positive.")
-        with c2: neg_threshold = st.slider("neg threshold", -1.0, 0.0, -0.05, 0.01, help="Scores below this are Negative.")
+        with c1: pos_threshold = st.slider("pos threshold", 0.0, 1.0, 0.05, 0.01)
+        with c2: neg_threshold = st.slider("neg threshold", -1.0, 0.0, -0.05, 0.01)
         c1, c2, c3 = st.columns(3)
         with c1: pos_color = st.color_picker("pos color", value=pos_color)
         with c2: neu_color = st.color_picker("neu color", value=neu_color)
         with c3: neg_color = st.color_picker("neg color", value=neg_color)
 
-    doc_granularity = st.select_slider("Rows per Doc", options=[1, 5, 10, 100, 500], value=5, help="CRITICAL: How many rows of your file equal one 'document' for the AI? \n1 = Analysis line-by-line (fine detail).\n100 = Analysis by chunks (broad themes).")
+    doc_granularity = st.select_slider("Rows per Doc", options=[1, 5, 10, 100, 500], value=5, help="Controls how data is grouped for Topic Modeling. 1 = Line-by-line analysis (detailed). 500 = Group many lines (high-level themes).")
     st.session_state['sketch'].set_batch_size(doc_granularity)
     
     if 'last_gran' not in st.session_state: st.session_state['last_gran'] = doc_granularity
@@ -1027,8 +1078,8 @@ with st.sidebar:
             st.warning("Granularity changed. Data reset.")
         st.session_state['last_gran'] = doc_granularity
 
-    topic_model_type = st.selectbox("Topic Model", ["LDA", "NMF"], help="LDA: Best for longer text with mixed topics.\nNMF: Best for short, distinct text (like support tickets).")
-    n_topics = st.slider("Topics", 2, 10, 4, help="How many distinct themes should the algorithm attempt to find?")
+    topic_model_type = st.selectbox("Topic Model", ["LDA", "NMF"], help="LDA is probabilistic (good for long, mixed text). NMF is linear (good for short, distinct text like chats).")
+    n_topics = st.slider("Topics", 2, 10, 4, help="The number of distinct themes the algorithm will attempt to find.")
 
 # --- REFINERY UTILITY ---
 with st.expander("🛠️ Data Refinery"):
@@ -1057,6 +1108,11 @@ if all_inputs:
     for idx, f in enumerate(all_inputs):
         # SAFETY: Wrap each file in try/except so one bad file doesn't crash the whole UI
         try:
+            # SECURITY: RESOURCE LIMIT CHECK
+            if f.getbuffer().nbytes > MAX_FILE_SIZE_MB * 1024 * 1024:
+                st.error(f"❌ File **{f.name}** exceeds {MAX_FILE_SIZE_MB}MB limit.")
+                continue
+
             file_bytes, fname, lower = f.getvalue(), f.name, f.name.lower()
             
             is_csv = lower.endswith(".csv")
@@ -1220,6 +1276,10 @@ if combined_counts:
 
     st.subheader("🔍 Bayesian Theme Discovery")
     
+    # LOGIC FIX: Warn about truncated topic models
+    if scanner.limit_reached:
+        st.warning(f"⚠️ **Topic Model Limit Reached:** The analysis used the first {MAX_TOPIC_DOCS:,} document samples. Global word counts are accurate, but topics may not reflect the entire dataset.")
+
     with st.expander(f"🤔 How this works ({topic_model_type}) & Troubleshooting", expanded=False):
         n_docs = len(scanner.topic_docs)
         st.markdown(f"**Analysis Basis:** The model is learning from **{n_docs} synthetic documents** generated during the scan.")
