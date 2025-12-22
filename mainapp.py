@@ -1,6 +1,6 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Status: PRODUCTION (Security Hardened + Full Feature Set + Full Documentation)
+#  Status: PRODUCTION (Security Hardened + Full Feature Set + Bug Fix: top_n restored)
 #
 import io
 import os
@@ -1042,6 +1042,10 @@ with st.sidebar:
     font_map, font_names = list_system_fonts(), list(list_system_fonts().keys())
     combined_font_name = st.selectbox("font", font_names or ["(default)"], 0)
     combined_font_path = font_map.get(combined_font_name) if font_names else None
+
+    # --- RESTORED top_n HERE ---
+    st.markdown("### 📊 Tables")
+    top_n = st.number_input("Top Terms to Display", min_value=5, max_value=1000, value=20)
 
     st.markdown("### 🔬 Sentiment")
     enable_sentiment = st.checkbox("Enable Sentiment", False)
