@@ -1050,135 +1050,140 @@ if all_inputs:
     st.subheader("🚀 Scanning Phase")
     # Config gathering loop
     file_configs = {}
+    
     for idx, f in enumerate(all_inputs):
-        file_bytes, fname, lower = f.getvalue(), f.name, f.name.lower()
-        
-        is_csv = lower.endswith(".csv")
-        is_xlsx = lower.endswith((".xlsx", ".xlsm"))
-        is_json = lower.endswith(".json")
-        is_vtt = lower.endswith(".vtt")
-        
-        # Default config
-        config = {
-            "read_mode": "raw lines", "delimiter": ",", "has_header": False,
-            "sheet_name": None, "json_key": None, "selected_cols": [], "join_with": " "
-        }
-        
-        # --- input options w/ data preview-
-        with st.expander(f"🧩 Scan Configuration: {fname}", expanded=True):
-            if is_vtt: st.info("VTT transcript detected.")
-            elif is_csv:
-                try: inferred_cols = detect_csv_num_cols(file_bytes, "auto", delimiter=",")
-                except Exception: inferred_cols = 1
-                default_mode = "csv columns" if inferred_cols > 1 else "raw lines"
-                
-                config["read_mode"] = st.radio("read mode", ["raw lines", "csv columns"], index=0 if default_mode=="raw lines" else 1, key=f"csv_mode_{idx}")
-                delim_choice = st.selectbox("delimiter", [",", "tab", ";", "|"], 0, key=f"csv_delim_{idx}")
-                config["delimiter"] = {",": ",", "tab": "\t", ";": ";", "|": "|"}[delim_choice]
-                config["has_header"] = st.checkbox("header row", value=True if inferred_cols > 1 else False, key=f"csv_header_{idx}")
-                
-                if config["read_mode"] == "csv columns":
-                    st.caption("🔍 Data Preview")
-                    df_prev = get_csv_preview(file_bytes, "auto", config["delimiter"], config["has_header"])
-                    st.dataframe(df_prev, use_container_width=True, height=150)
-                    if not df_prev.empty:
-                        col_names = list(df_prev.columns)
-                        config["selected_cols"] = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"csv_cols_{idx}")
-                        config["join_with"] = st.text_input("join with", " ", key=f"csv_join_{idx}")
-            elif is_xlsx:
-                if openpyxl:
-                    sheets = get_excel_sheetnames(file_bytes)
-                    config["sheet_name"] = st.selectbox("sheet", sheets or ["(none)"], 0, key=f"xlsx_sheet_{idx}")
-                    config["has_header"] = st.checkbox("header row", True, key=f"xlsx_header_{idx}")
-                    if config["sheet_name"]:
+        # SAFETY: Wrap each file in try/except so one bad file doesn't crash the whole UI
+        try:
+            file_bytes, fname, lower = f.getvalue(), f.name, f.name.lower()
+            
+            is_csv = lower.endswith(".csv")
+            is_xlsx = lower.endswith((".xlsx", ".xlsm"))
+            is_json = lower.endswith(".json")
+            is_vtt = lower.endswith(".vtt")
+            
+            # Default config
+            config = {
+                "read_mode": "raw lines", "delimiter": ",", "has_header": False,
+                "sheet_name": None, "json_key": None, "selected_cols": [], "join_with": " "
+            }
+            
+            # --- input options w/ data preview-
+            with st.expander(f"🧩 Scan Configuration: {fname}", expanded=True):
+                if is_vtt: st.info("VTT transcript detected.")
+                elif is_csv:
+                    try: inferred_cols = detect_csv_num_cols(file_bytes, "auto", delimiter=",")
+                    except Exception: inferred_cols = 1
+                    default_mode = "csv columns" if inferred_cols > 1 else "raw lines"
+                    
+                    config["read_mode"] = st.radio("read mode", ["raw lines", "csv columns"], index=0 if default_mode=="raw lines" else 1, key=f"csv_mode_{idx}")
+                    delim_choice = st.selectbox("delimiter", [",", "tab", ";", "|"], 0, key=f"csv_delim_{idx}")
+                    config["delimiter"] = {",": ",", "tab": "\t", ";": ";", "|": "|"}[delim_choice]
+                    config["has_header"] = st.checkbox("header row", value=True if inferred_cols > 1 else False, key=f"csv_header_{idx}")
+                    
+                    if config["read_mode"] == "csv columns":
                         st.caption("🔍 Data Preview")
-                        df_prev = get_excel_preview(file_bytes, config["sheet_name"], config["has_header"])
+                        df_prev = get_csv_preview(file_bytes, "auto", config["delimiter"], config["has_header"])
                         st.dataframe(df_prev, use_container_width=True, height=150)
                         if not df_prev.empty:
                             col_names = list(df_prev.columns)
-                            config["selected_cols"] = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"xlsx_cols_{idx}")
-                            config["join_with"] = st.text_input("join with", " ", key=f"xlsx_join_{idx}")
+                            config["selected_cols"] = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"csv_cols_{idx}")
+                            config["join_with"] = st.text_input("join with", " ", key=f"csv_join_{idx}")
+                elif is_xlsx:
+                    if openpyxl:
+                        sheets = get_excel_sheetnames(file_bytes)
+                        config["sheet_name"] = st.selectbox("sheet", sheets or ["(none)"], 0, key=f"xlsx_sheet_{idx}")
+                        config["has_header"] = st.checkbox("header row", True, key=f"xlsx_header_{idx}")
+                        if config["sheet_name"]:
+                            st.caption("🔍 Data Preview")
+                            df_prev = get_excel_preview(file_bytes, config["sheet_name"], config["has_header"])
+                            st.dataframe(df_prev, use_container_width=True, height=150)
+                            if not df_prev.empty:
+                                col_names = list(df_prev.columns)
+                                config["selected_cols"] = st.multiselect("Select Text Columns to Scan", col_names, [col_names[0]], key=f"xlsx_cols_{idx}")
+                                config["join_with"] = st.text_input("join with", " ", key=f"xlsx_join_{idx}")
 
-            elif is_json:
-                st.info("JSON/JSONL File.")
-                config["json_key"] = st.text_input("Key to Extract", "", key=f"json_key_{idx}")
-        
-        file_configs[idx] = config
+                elif is_json:
+                    st.info("JSON/JSONL File.")
+                    config["json_key"] = st.text_input("Key to Extract", "", key=f"json_key_{idx}")
+            
+            file_configs[idx] = config
 
-        if st.button(f"⚡ Start Scan: {fname}", key=f"btn_scan_{idx}"):
-            if clear_on_scan: reset_sketch()
-            bar = st.progress(0)
-            status = st.empty()
-            c = file_configs[idx]
-            
-            # Setup Iterator
-            rows_iter = iter([])
-            approx = 0
-            
-            if is_vtt:
-                rows_iter = read_rows_vtt(file_bytes, "auto")
-                approx = estimate_row_count_from_bytes(file_bytes)
-            elif is_json:
-                rows_iter = read_rows_json(file_bytes, c["json_key"] if c["json_key"] else None)
-                approx = estimate_row_count_from_bytes(file_bytes)
-            elif is_csv:
-                if c["read_mode"] == "raw lines":
-                    rows_iter = read_rows_raw_lines(file_bytes, "auto")
-                else:
-                    rows_iter = iter_csv_selected_columns(file_bytes, "auto", c["delimiter"], c["has_header"], c["selected_cols"], c["join_with"])
-                approx = estimate_row_count_from_bytes(file_bytes)
-            elif is_xlsx and openpyxl:
-                if c["sheet_name"]:
-                    rows_iter = iter_excel_selected_columns(file_bytes, c["sheet_name"], c["has_header"], c["selected_cols"], c["join_with"])
-                    approx = excel_estimate_rows(file_bytes, c["sheet_name"], c["has_header"])
-            elif lower.endswith(".pdf"):
-                rows_iter = read_rows_pdf(file_bytes)
-            elif lower.endswith(".pptx"):
-                rows_iter = read_rows_pptx(file_bytes)
-            else:
-                rows_iter = read_rows_raw_lines(file_bytes)
-                approx = estimate_row_count_from_bytes(file_bytes)
-            
-            def mk_cb(total):
-                def cb(n): 
-                    if total: 
-                        bar.progress(min(99, int(n*100/total)))
-                        status.text(f"Processed {n:,} / {total:,} rows")
+            if st.button(f"⚡ Start Scan: {fname}", key=f"btn_scan_{idx}"):
+                if clear_on_scan: reset_sketch()
+                bar = st.progress(0)
+                status = st.empty()
+                c = file_configs[idx]
+                
+                # Setup Iterator
+                rows_iter = iter([])
+                approx = 0
+                
+                if is_vtt:
+                    rows_iter = read_rows_vtt(file_bytes, "auto")
+                    approx = estimate_row_count_from_bytes(file_bytes)
+                elif is_json:
+                    rows_iter = read_rows_json(file_bytes, c["json_key"] if c["json_key"] else None)
+                    approx = estimate_row_count_from_bytes(file_bytes)
+                elif is_csv:
+                    if c["read_mode"] == "raw lines":
+                        rows_iter = read_rows_raw_lines(file_bytes, "auto")
                     else:
-                        status.text(f"Processed {n:,} rows")
-                return cb
-            
-            stats = Counter()
-            process_chunk_iter(rows_iter, clean_conf, proc_conf, st.session_state['sketch'], mk_cb(approx), stats)
-            
-            bar.progress(100)
-            if sum(stats.values()) == 0:
-                status.warning("⚠️ Scan finished, but 0 valid tokens were found.")
-                st.markdown("""
-                **Why is the result empty?**
-                *   **Numeric Data:** Did you scan a column of ID numbers while 'Drop Integers' is checked in the sidebar?
-                *   **Strict Filters:** Are words shorter than 'Min Word Len' (default: 2)?
-                *   **Stopwords:** Did your custom stopwords remove everything?
+                        rows_iter = iter_csv_selected_columns(file_bytes, "auto", c["delimiter"], c["has_header"], c["selected_cols"], c["join_with"])
+                    approx = estimate_row_count_from_bytes(file_bytes)
+                elif is_xlsx and openpyxl:
+                    if c["sheet_name"]:
+                        rows_iter = iter_excel_selected_columns(file_bytes, c["sheet_name"], c["has_header"], c["selected_cols"], c["join_with"])
+                        approx = excel_estimate_rows(file_bytes, c["sheet_name"], c["has_header"])
+                elif lower.endswith(".pdf"):
+                    rows_iter = read_rows_pdf(file_bytes)
+                elif lower.endswith(".pptx"):
+                    rows_iter = read_rows_pptx(file_bytes)
+                else:
+                    rows_iter = read_rows_raw_lines(file_bytes)
+                    approx = estimate_row_count_from_bytes(file_bytes)
                 
-                **Fix:** Adjust the **Processing** settings in the sidebar or select a different column (like 'Name' or 'Description').
-                """)
-            else:
-                status.success(f"Scan Complete! Captured {sum(stats.values()):,} tokens.")
-            
-            # Quick View
-            if stats:
-                st.markdown("##### 📄 Quick View: This File")
-                color_func = None
-                if enable_sentiment:
-                    top_keys = [k for k,v in stats.most_common(1000)]
-                    sentiments = get_sentiments(analyzer, tuple(top_keys))
-                    color_func = create_sentiment_color_func(sentiments, pos_color, neg_color, neu_color, pos_threshold, neg_threshold)
+                def mk_cb(total):
+                    def cb(n): 
+                        if total: 
+                            bar.progress(min(99, int(n*100/total)))
+                            status.text(f"Processed {n:,} / {total:,} rows")
+                        else:
+                            status.text(f"Processed {n:,} rows")
+                    return cb
                 
-                fig, _ = build_wordcloud_figure_from_counts(stats, max_words, width, height, bg_color, colormap, combined_font_path, random_state, color_func)
-                st.pyplot(fig)
-                plt.close(fig)
-            
-            if not clear_on_scan: st.rerun()
+                stats = Counter()
+                process_chunk_iter(rows_iter, clean_conf, proc_conf, st.session_state['sketch'], mk_cb(approx), stats)
+                
+                bar.progress(100)
+                
+                # UX Feedback for Empty Scans
+                if sum(stats.values()) == 0:
+                    status.warning("⚠️ Scan finished, but 0 valid tokens were found.")
+                    st.markdown("""
+                    **Possible Reasons:**
+                    *   **Numeric Data:** Did you scan a column of ID numbers while 'Drop Integers' is checked?
+                    *   **Strict Filters:** Are words shorter than 'Min Word Len'?
+                    """)
+                else:
+                    status.success(f"Scan Complete! Captured {sum(stats.values()):,} tokens.")
+                
+                # Quick View
+                if stats:
+                    st.markdown("##### 📄 Quick View: This File")
+                    color_func = None
+                    if enable_sentiment:
+                        top_keys = [k for k,v in stats.most_common(1000)]
+                        sentiments = get_sentiments(analyzer, tuple(top_keys))
+                        color_func = create_sentiment_color_func(sentiments, pos_color, neg_color, neu_color, pos_threshold, neg_threshold)
+                    
+                    fig, _ = build_wordcloud_figure_from_counts(stats, max_words, width, height, bg_color, colormap, combined_font_path, random_state, color_func)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                
+                if not clear_on_scan: st.rerun()
+        
+        except Exception as e:
+            st.error(f"❌ Error rendering UI for file **{f.name}**: {str(e)}")
 
 # ----------------------------
 # ANALYSIS PHASE (Reads from Sketch)
