@@ -656,12 +656,54 @@ def perform_refinery_job(file_obj, chunk_size, clean_conf: CleaningConfig):
 # ==========================================
 
 def render_workflow_guide():
-    with st.expander("📘 App Guide & Workflow", expanded=False):
+    with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=False):
         st.markdown("""
-        ### 🛠️ Choose Your Workflow
-        1. **Quick Analysis:** Upload <1GB files for instant visualization.
-        2. **Deep Scan:** Use for large files. Runs in streaming mode.
-        3. **Enterprise:** Use offline harvester for 10M+ rows.
+        ### 🌟 What is this?
+        This is an **Unstructured Data Intelligence Engine**. It takes "dirty," raw text (from logs, surveys, transcripts, or documents) and extracts mathematical structure, semantic meaning, and qualitative insights without requiring you to write code.
+
+        ---
+
+        ### 🚀 1. Choose Your Workflow
+
+        #### A. The "Quick Analysis" (Small/Medium Files)
+        *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs < 200MB.
+        *   **How:** Simply upload files in the sidebar. 
+        *   **Result:** The app processes them immediately in memory. You get a "Quick View" Word Cloud for each file as it loads, followed by a master analysis of all files combined.
+
+        #### B. The "Deep Scan" (Large Datasets)
+        *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
+        *   **How:** Upload the file, then click the **"⚡ Start Scan"** button that appears. 
+        *   **Mechanism:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts statistics into a lightweight "Sketch," and immediately discards the raw text to save memory.
+        *   **Benefit:** This allows you to process datasets larger than your available RAM.
+
+        #### C. The "Enterprise" Workflow (Offline/Secure)
+        *   **Best for:** Massive datasets (10M+ rows) or sensitive data (PII) that cannot leave your secure server.
+        *   **How:** Use the **Harvester Script** (found in the "Enterprise" expander below) to process data locally on your secure machine. It generates a `.json` Sketch file containing only math/counts (no raw text). Upload that JSON here to visualize it.
+
+        ---
+
+        ### 🧠 2. Interpret the Analytics
+
+        #### 🕸️ Network Graph & Community Detection
+        *   **The Concept:** Maps how words connect. If "Battery" frequently appears near "Drain," a line connects them.
+        *   **Communities (Colors):** Nodes are colored by cluster. If distinct color groups appear, you have successfully separated different conversation topics (e.g., "Login Issues" vs. "Billing Issues").
+
+        #### 🔬 NPMI (Phrase Significance)
+        *   **The Problem:** Raw frequency often highlights boring pairs (e.g., "of the", "to be").
+        *   **The Solution:** NPMI (Normalized Pointwise Mutual Information) measures *surprise*. It highlights words that appear together *more often than random chance* (e.g., "Credit Card", "Customer Service"). High scores (>0.5) indicate strong semantic links.
+
+        #### 🔍 Bayesian Theme Discovery (Topic Modeling)
+        *   **LDA Model:** Best for long text (essays/reports). Assumes documents are a "smoothie" of mixed topics.
+        *   **NMF Model:** Best for short text (chats/tickets). Assumes documents fall into distinct, sharp "buckets."
+
+        #### ⚖️ Bayesian Sentiment Inference
+        *   **The Value:** Standard sentiment analysis gives you a raw score. This engine calculates a **Credible Interval** (e.g., "We are 95% confident the true positive rate is between 55% and 65%"). This protects you from making business decisions based on small sample sizes.
+
+        ---
+
+        ### ⚡ 3. Utilities
+        *   **Data Refinery:** If you have a 500MB CSV that Excel refuses to open, use the Refinery. It cleans the text (removing HTML/Chat logs) and splits it into manageable, Excel-ready chunks.
+        *   **AI Analyst:** Uses an LLM (Grok/GPT) to read the *summary statistics* and write a qualitative report.
         """)
 
 def render_analyst_help():
