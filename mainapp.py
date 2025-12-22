@@ -1,7 +1,7 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
 #  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Fixed: Topic Modeling Granularity Bug
-#  Improved: Safety Caps, Unified Cleaning, URL Regex, Heatmap, NPMI
+#  Status: Production Ready
+#  Features: Topic Modeling (Cap), Heatmap, NPMI, Unified Cleaning
 #
 import io
 import os
@@ -80,7 +80,7 @@ except ImportError:
     nltk = None
     SentimentIntensityAnalyzer = None
 
-# --- PRECOMPILED PATTERNS (IMPROVED) ---
+# --- PRECOMPILED PATTERNS ---
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 CHAT_ARTIFACT_RE = re.compile(
     r":\w+:"
@@ -122,15 +122,12 @@ class StreamScanner:
         self.DOC_BATCH_SIZE = size
 
     def ingest_chunk_stats(self, chunk_counts: Counter, chunk_bigrams: Counter, row_count: int):
-        # 1. Global Stats (Always additive, safe to grow)
+        # 1. Global Stats (Always additive)
         self.global_counts.update(chunk_counts)
         self.global_bigrams.update(chunk_bigrams)
         self.total_rows_processed += row_count
         
         # 2. Topic Modeling Aggregation (Needs Safety Cap)
-        
-        # If cap reached, we stop adding to topic_docs to save memory, 
-        # but we continue processing global stats.
         if self.limit_reached:
             return
 
@@ -263,7 +260,6 @@ def build_phrase_pattern(phrases: List[str]) -> Optional[re.Pattern]:
     return re.compile(rf"\b(?:{'|'.join(escaped)})\b", flags=re.IGNORECASE)
 
 def estimate_row_count_from_bytes(file_bytes: bytes) -> int:
-    # Improved to handle Windows line endings better
     if not file_bytes: return 0
     return file_bytes.count(b'\n') + 1
 
@@ -372,7 +368,6 @@ def read_rows_json(file_bytes: bytes, selected_key: str = None) -> Iterable[str]
                 elif isinstance(obj, str): yield obj
                 else: yield str(obj)
             except json.JSONDecodeError:
-                # Handle standard JSON list if not JSONL
                 bio.seek(0)
                 data = json.load(wrapper)
                 if isinstance(data, list):
@@ -575,7 +570,6 @@ def process_chunk_iter(
         
         filtered_tokens_line: List[str] = []
         for t in text.split():
-            # URL removal is now handled in apply_text_cleaning via regex
             t = t.translate(_trans)
             if not t or len(t) < _min_len or (_drop_int and t.isdigit()) or t in _stopwords: continue
             filtered_tokens_line.append(t)
@@ -673,65 +667,56 @@ def perform_refinery_job(file_obj, chunk_size, remove_chat_artifacts, remove_htm
 #-
 
 def render_interpretation_guide():
-    with st.expander("🎓 Analyst's Guide: How to interpret these results", expanded=False):
-        st.markdown("Use the tabs below to troubleshoot common patterns in your data.")
-        
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "😕 Graph vs. Topics Disagree", 
-            "🌫️ Giant 'Blob' Graph", 
-            "🔍 Topics Look Mixed", 
-            "📉 Too Few Results"
-        ])
-        
-        with tab1:
-            st.markdown("""
-            **Symptom:** The Network Graph shows clear, separated clusters, but the Topic Model (NMF/LDA) lumps them into one topic.
-            
-            **The Cause:**
-            The Graph acts like a **Filter**: it hides weak connections (based on your 'Min Link Frequency' slider). 
-            The Topic Model is a **Sponge**: it absorbs *every* connection, even the weak ones.
-            
-            **The Fix:**
-            1. **Check for 'Bridges':** You likely have 1 or 2 rows of text that contain words from *both* clusters (e.g., "The **video** password **reset** is broken").
-            2. **Granularity:** If 'Rows per Document' is too high, you might be accidentally merging unrelated sentences into one document. Set it to **1**.
-            """)
-            
-        with tab2:
-            st.markdown("""
-            **Symptom:** The Network Graph is one giant, tangled hairball with no clear colors or clusters.
-            
-            **The Cause:**
-            Your data is "Homogenous." Everything is related to everything else. This is common in small datasets or very specific documents (e.g., a legal contract).
-            
-            **The Fix:**
-            1. **Increase 'Min Link Frequency':** Drag the slider up to cut the weak ties and reveal the strong skeleton of the conversation.
-            2. **Repulsion:** Increase the 'Repulsion' slider in Graph Settings to physically push the nodes apart.
-            """)
-            
-        with tab3:
-            st.markdown("""
-            **Symptom:** Topic 1 and Topic 2 look almost identical, or Topic 1 has all the words and Topic 2 has nonsense.
-            
-            **The Cause:**
-            *   **Data Size:** You might not have enough data. NMF needs repetition to find patterns.
-            *   **Granularity:** If 'Rows per Document' is **1**, and your sentences are very short (3-4 words), the math fails because there isn't enough context overlap.
-            
-            **The Fix:**
-            1. **Increase Granularity:** Set 'Rows per Document' to **5** or **10**. This groups sentences together, giving the math more to work with.
-            2. **Switch Model:** Try **LDA**. It is sometimes more forgiving on sparse data than NMF.
-            """)
+    with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=False):
+        st.markdown("""
+        ### 🌟 What is this?
+        This is an **Unstructured Data Intelligence Engine**. It is designed to take "dirty," raw text (from logs, surveys, transcripts, or documents) and extract mathematical structure, semantic meaning, and qualitative insights.
 
-        with tab4:
-            st.markdown("""
-            **Symptom:** The Word Cloud is empty, or the Graph has no nodes.
-            
-            **The Cause:**
-            Your cleaning rules are too strict.
-            
-            **The Fix:**
-            1. **Stopwords:** Did you add too many custom stopwords?
-            2. **Thresholds:** Lower the 'Top Terms Count' or the 'Min Link Frequency'.
-            """)
+        ---
+
+        ### 🛠️ Choose Your Workflow
+
+        #### 1. The "Quick Analysis" Workflow (Small/Medium Files)
+        *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs < 200MB.
+        *   **How:** Upload files in the sidebar. 
+        *   **Result:** The app processes them immediately. You get a "Quick View" Word Cloud for each file as it loads, followed by a master analysis of all files combined.
+
+        #### 2. The "Deep Scan" Workflow (Large Datasets)
+        *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
+        *   **How:** Upload the file. Click **"Start Scan"**. 
+        *   **Result:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts the statistics into a lightweight "Sketch," and immediately discards the raw text to save memory.
+
+        #### 3. The "Enterprise" Workflow (Offline Harvesting)
+        *   **Best for:** Massive corporate datasets (10M+ rows) or sensitive data that cannot leave your secure server.
+        *   **How:** Use the **Offline Harvester** script (found below) to process data locally. It produces a `.json` file containing only math/statistics (no raw text) which you can upload here.
+
+        ---
+
+        ### 🧠 The Analytical Engines
+
+        #### 🕸️ Network Graph & Community Detection
+        *   **Concept:** Maps how words connect. Colors represent clusters of topics.
+        *   **Value:** If distinct clusters appear, you have successfully separated different conversations (e.g., "Login Issues" vs. "Billing Issues").
+
+        #### 🔥 Heatmap & Phrase Significance (NPMI)
+        *   **Heatmap:** Visualizes the "neighborhood" of your top terms. See exactly how often "Battery" appears next to "Drain" vs "Charger."
+        *   **NPMI (Normalized Pointwise Mutual Information):** A statistical score that separates **Meaningful Phrases** (e.g., "Artificial Intelligence") from **Random Noise** (e.g., "of the").
+
+        #### 🔍 Bayesian Theme Discovery (Topic Modeling)
+        *   **LDA:** Best for essays/assignments (assumes mixed topics).
+        *   **NMF:** Best for chat logs/tickets (assumes distinct categories).
+        *   *Note:* Uses a safety cap (50k docs) to prevent memory crashes on massive files.
+
+        #### ⚖️ Bayesian Sentiment Inference
+        *   **The Value:** Calculates a **Credible Interval** (e.g., "We are 95% confident the positive rate is between 55-65%") rather than a raw average, protecting you from small-sample bias.
+
+        ---
+
+        ### ⚡ Utility: The Data Refinery
+        *   **Purpose:** Clean and split massive files that Excel can't open.
+        *   **Consistency:** It now uses the **exact same** cleaning logic (Regex, URL removal, Stopwords) as the analysis engine.
+        *   **Output:** A ZIP file of clean, Excel-ready CSV chunks.
+        """)
 
 def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
     total_tokens = sum(counts.values())
@@ -941,56 +926,12 @@ st.set_page_config(page_title="Word Cloud & Graph Analytics", layout="wide")
 st.title("🧠 Multi-File Word Cloud & Graph Analyzer")
 
 
-with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=False):
-    st.markdown("""
-    ### 🌟 What is this?
-    This is an **Unstructured Data Intelligence Engine**. It is designed to take "dirty," raw text (from logs, surveys, transcripts, or documents) and extract mathematical structure, semantic meaning, and qualitative insights.
+render_interpretation_guide() # Call updated guide
 
-    ---
-
-    ### 🛠️ Choose Your Workflow
-
-    #### 1. The "Quick Analysis" Workflow (Small/Medium Files)
-    *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs < 200MB.
-    *   **How:** Upload files in the sidebar. 
-    *   **Result:** The app processes them immediately. You get a "Quick View" Word Cloud for each file as it loads, followed by a master analysis of all files combined.
-
-    #### 2. The "Deep Scan" Workflow (Large Datasets)
-    *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
-    *   **How:** Upload the file. Click **"Start Scan"**. 
-    *   **Result:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts the statistics into a lightweight "Sketch," and immediately discards the raw text to save memory.
-
-    #### 3. The "Enterprise" Workflow (Offline Harvesting)
-    *   **Best for:** Massive corporate datasets (10M+ rows) or sensitive data that cannot leave your secure server.
-    *   **How:** Use the **Offline Harvester** script (found below) to process data locally. It produces a `.json` file containing only math/statistics (no raw text) which you can upload here.
-
-    ---
-
-    ### 🧠 The Analytical Engines
-
-    #### 🕸️ Network Graph & Community Detection
-    *   **Concept:** Maps how words connect. Colors represent clusters of topics.
-    *   **Value:** If distinct clusters appear, you have successfully separated different conversations (e.g., "Login Issues" vs. "Billing Issues").
-
-    #### 🔥 Heatmap & Phrase Significance (NPMI)
-    *   **Heatmap:** Visualizes the "neighborhood" of your top terms. See exactly how often "Battery" appears next to "Drain" vs "Charger."
-    *   **NPMI (Normalized Pointwise Mutual Information):** A statistical score that separates **Meaningful Phrases** (e.g., "Artificial Intelligence") from **Random Noise** (e.g., "of the").
-
-    #### 🔍 Bayesian Theme Discovery (Topic Modeling)
-    *   **LDA:** Best for essays/assignments (assumes mixed topics).
-    *   **NMF:** Best for chat logs/tickets (assumes distinct categories).
-    *   *Note:* Uses a safety cap (50k docs) to prevent memory crashes on massive files.
-
-    #### ⚖️ Bayesian Sentiment Inference
-    *   **The Value:** Calculates a **Credible Interval** (e.g., "We are 95% confident the positive rate is between 55-65%") rather than a raw average, protecting you from small-sample bias.
-
-    ---
-
-    ### ⚡ Utility: The Data Refinery
-    *   **Purpose:** Clean and split massive files that Excel can't open.
-    *   **Consistency:** It now uses the **exact same** cleaning logic (Regex, URL removal, Stopwords) as the analysis engine.
-    *   **Output:** A ZIP file of clean, Excel-ready CSV chunks.
-    """)
+st.warning("""
+**⚠️ Data Privacy & Security Notice**
+Data is processed ephemerally. Raw text is not stored. Do not upload files containing sensitive PII on public servers.
+""")
 
 analyzer = setup_sentiment_analyzer()
 
@@ -1480,7 +1421,7 @@ combined_bigrams = scanner.global_bigrams
 if combined_counts:
     st.divider()
     st.header("📊 Analysis Phase")
-    render_interpretation_guide() 
+    
     # NEW: SKETCH EXPORT
     st.download_button(
         label="💾 Download Sketch (.json) for later",
@@ -1587,11 +1528,10 @@ if combined_counts:
         st.divider()
 
     if show_graph:
-        st.subheader("🔗 Network Graph & Analytics")
+        st.subheader("🔗 Network Graph")
         # 1. graphing config/'physics'
         with st.expander("🛠️ Graph Settings & Physics", expanded=False):
             c1, c2, c3 = st.columns(3)
-            # Default Min Link Frequency changed to 2 for better small-file performance
             min_edge_weight = c1.slider("Min Link Frequency", 2, 100, 2)
             max_nodes_graph = c1.slider("Max Nodes", 10, 200, 80)
             repulsion_val = c2.slider("Repulsion", 100, 3000, 1000)
@@ -1649,7 +1589,7 @@ if combined_counts:
             agraph(nodes=nodes, edges=edges, config=config)
 
             st.markdown("### 📊 Graph Analytics")
-            tab1, tab2, tab3, tab4 = st.tabs(["Basic Stats", "Top Nodes", "Text Stats", "🔥 Heatmap"])
+            tab1, tab2 = st.tabs(["Basic Stats", "Top Nodes"])
             with tab1:
                 col_b1, col_b2, col_b3 = st.columns(3)
                 col_b1.metric("Nodes", G.number_of_nodes())
@@ -1663,62 +1603,60 @@ if combined_counts:
                     node_weights[u] += w
                     node_weights[v] += w
                 st.dataframe(pd.DataFrame(list(node_weights.items()), columns=["Node", "Weighted Degree"]).sort_values("Weighted Degree", ascending=False).head(50), use_container_width=True)
-            with tab3:
-                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-                col_s1.metric("Total Tokens", f"{text_stats['Total Tokens']:,}")
-                col_s2.metric("Unique Vocab", f"{text_stats['Unique Vocabulary']:,}")
-                col_s3.metric("Lexical Diversity", f"{text_stats['Lexical Diversity']}")
-                col_s4.metric("Avg Word Len", f"{text_stats['Avg Word Length']}")
+
+    # --- TEXT STATS & HEATMAP (Now Outside Graph Condition) ---
+    st.subheader("📈 Text Statistics & Co-occurrence")
+    
+    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    col_s1.metric("Total Tokens", f"{text_stats['Total Tokens']:,}")
+    col_s2.metric("Unique Vocab", f"{text_stats['Unique Vocabulary']:,}")
+    col_s3.metric("Lexical Diversity", f"{text_stats['Lexical Diversity']}")
+    col_s4.metric("Avg Word Len", f"{text_stats['Avg Word Length']}")
+
+    # --- HEATMAP LOGIC ---
+    if compute_bigrams and combined_bigrams:
+        st.markdown("#### 🔥 Co-occurrence Heatmap")
+        st.caption("Shows how often the Top 20 terms appear next to each other.")
+        
+        # 1. Get Top 20 terms
+        top_20 = [w for w, c in combined_counts.most_common(20)]
+        
+        # 2. Build Matrix
+        mat_size = len(top_20)
+        if mat_size > 1:
+            heatmap_matrix = np.zeros((mat_size, mat_size))
             
-            # --- NEW: HEATMAP VISUALIZATION ---
-            with tab4:
-                st.caption("Shows how often the Top 20 terms appear next to each other.")
-                # 1. Get Top 20 terms
-                top_20 = [w for w, c in combined_counts.most_common(20)]
-                # 2. Build Matrix
-                mat_size = len(top_20)
-                heatmap_matrix = np.zeros((mat_size, mat_size))
-                
-                for i, w1 in enumerate(top_20):
-                    for j, w2 in enumerate(top_20):
-                        if i == j: 
-                            heatmap_matrix[i][j] = 0 # No self loops in heatmap
-                        else:
-                            # Check (w1, w2) and (w2, w1)
-                            val = combined_bigrams.get((w1, w2), 0) + combined_bigrams.get((w2, w1), 0)
-                            heatmap_matrix[i][j] = val
+            for i, w1 in enumerate(top_20):
+                for j, w2 in enumerate(top_20):
+                    if i == j: 
+                        heatmap_matrix[i][j] = 0 # No self loops in heatmap
+                    else:
+                        # Check (w1, w2) and (w2, w1)
+                        val = combined_bigrams.get((w1, w2), 0) + combined_bigrams.get((w2, w1), 0)
+                        heatmap_matrix[i][j] = val
 
-                # 3. Plot
-                if mat_size > 1:
-                    fig_h, ax_h = plt.subplots(figsize=(10, 8))
-                    im = ax_h.imshow(heatmap_matrix, cmap="Blues")
-                    
-                    # Labels
-                    ax_h.set_xticks(np.arange(mat_size))
-                    ax_h.set_yticks(np.arange(mat_size))
-                    ax_h.set_xticklabels(top_20, rotation=45, ha="right")
-                    ax_h.set_yticklabels(top_20)
-                    
-                    # Annotate
-                    for i in range(mat_size):
-                        for j in range(mat_size):
-                            if heatmap_matrix[i, j] > 0:
-                                ax_h.text(j, i, int(heatmap_matrix[i, j]), ha="center", va="center", color="black" if heatmap_matrix[i,j] < heatmap_matrix.max()/2 else "white", fontsize=8)
-                    
-                    ax_h.set_title("Top 20 Terms Co-occurrence")
-                    plt.tight_layout()
-                    st.pyplot(fig_h)
-                    plt.close(fig_h)
-                else:
-                    st.info("Not enough data for heatmap.")
-
-    else:
-        st.subheader("📈 Text Statistics")
-        col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-        col_s1.metric("Total Tokens", f"{text_stats['Total Tokens']:,}")
-        col_s2.metric("Unique Vocab", f"{text_stats['Unique Vocabulary']:,}")
-        col_s3.metric("Lexical Diversity", f"{text_stats['Lexical Diversity']}")
-        col_s4.metric("Avg Word Len", f"{text_stats['Avg Word Length']}")
+            # 3. Plot
+            fig_h, ax_h = plt.subplots(figsize=(10, 8))
+            im = ax_h.imshow(heatmap_matrix, cmap="Blues")
+            
+            # Labels
+            ax_h.set_xticks(np.arange(mat_size))
+            ax_h.set_yticks(np.arange(mat_size))
+            ax_h.set_xticklabels(top_20, rotation=45, ha="right")
+            ax_h.set_yticklabels(top_20)
+            
+            # Annotate
+            for i in range(mat_size):
+                for j in range(mat_size):
+                    if heatmap_matrix[i, j] > 0:
+                        ax_h.text(j, i, int(heatmap_matrix[i, j]), ha="center", va="center", color="black" if heatmap_matrix[i,j] < heatmap_matrix.max()/2 else "white", fontsize=8)
+            
+            ax_h.set_title("Top 20 Terms Co-occurrence")
+            plt.tight_layout()
+            st.pyplot(fig_h)
+            plt.close(fig_h)
+        else:
+            st.info("Not enough data (need at least 2 common terms) for heatmap.")
 
 else: 
     st.info("Uploaded data will be processed into the sketch above.")
