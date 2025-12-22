@@ -992,7 +992,7 @@ with st.sidebar:
     max_words = st.slider("max words", 50, 3000, 1000, 50, help="Maximum number of words to draw in the cloud.")
     width = st.slider("image width", 600, 2400, 1200, 100)
     height = st.slider("image height", 300, 1400, 600, 50)
-    random_state = st.number_input("random seed", 0, value=42, step=1, help="Fixes the layout. If you use the same seed, the Word Cloud will look identical every time. Change it to 'shuffle' the layout.")
+    random_state = st.number_input("random seed", 0, value=42, step=1, help="The seed controls the randomness. Same number = same image. Change this number to generate a new, random layout")
     
     font_map, font_names = list_system_fonts(), list(list_system_fonts().keys())
     combined_font_name = st.selectbox("font", font_names or ["(default)"], 0)
