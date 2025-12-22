@@ -1383,7 +1383,7 @@ if combined_counts and st.session_state['authenticated']:
     # 2. Free Form Question
     with col_ai_2:
         st.markdown("**2. Ask the Data**")
-        user_question = st.text_area("Ask a specific question:", height=100, placeholder="e.g., 'What are the main complaints about pricing?'")
+        user_question = st.text_area("Ask a specific question:", height=100, placeholder="e.g., 'What are the main concerns about...whatever?'")
         if st.button("Ask Question"):
             if user_question.strip():
                 with st.status("Thinking...", expanded=True):
