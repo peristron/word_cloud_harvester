@@ -956,7 +956,7 @@ def call_llm_and_track_cost(system_prompt: str, user_prompt: str, config: dict):
 # ==========================================
 
 st.set_page_config(page_title="Intel Engine", layout="wide")
-st.title("🧠 Intel Engine: Unstructured Data Analytics")
+st.title("🧠 Intel Engine: Unstructured Data Analytics (or: data geiger counter~)")
 
 render_workflow_guide() # calling updated guide
 render_use_cases()      # calling added use-cases
