@@ -1188,7 +1188,7 @@ if all_inputs:
             
             file_configs[idx] = config
 
-            if st.button(f"⚡ Start Scan: {fname}", key=f"btn_scan_{idx}"):
+            if st.button(f"⚡ Start Scan/RE-Scan: {fname}", key=f"btn_scan_{idx}"):
                 if clear_on_scan: reset_sketch()
                 bar = st.progress(0)
                 status = st.empty()
