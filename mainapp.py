@@ -1,6 +1,5 @@
 #  THE UNSTRUCTURED DATA INTEL ENGINE
-#  Architecture: Hybrid Streaming + "Data Refinery" Utility
-#  Status: PRODUCTION (Fixed: VirtualFile Polymorphism Error)
+#  Architecture: hybrid streaming + "Data Refinery" utility
 #
 import io
 import os
@@ -39,7 +38,7 @@ import networkx as nx
 import networkx.algorithms.community as nx_comm
 from streamlit_agraph import agraph, Node, Edge, Config
 
-# --- Third Party Imports Checks
+# --- 3rd party import checks
 try:
     import requests
     from bs4 import BeautifulSoup
@@ -82,8 +81,8 @@ except ImportError:
     nltk = None
     SentimentIntensityAnalyzer = None
 
-# ==========================================
-# ⚙️ CONSTANTS & CONFIGURATION
+
+# ⚙️ constants, config
 # ==========================================
 
 MAX_TOPIC_DOCS = 50_000
@@ -104,14 +103,14 @@ CHAT_ARTIFACT_RE = re.compile(
     r"|\[[^\]]+\]",
     flags=re.IGNORECASE
 )
-# Robust URL/Email Regex
+# URL/email regex
 URL_EMAIL_RE = re.compile(
     r'(?:https?://|www\.)[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+[^\s]*'
     r'|(?:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})',
     flags=re.IGNORECASE
 )
 
-# Logger Setup
+# logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("IntelEngine")
 
@@ -122,8 +121,8 @@ class ReaderError(Exception):
 class ValidationError(Exception):
     pass
 
-# ==========================================
-# 📦 DATACLASSES
+
+# 📦 dataclasses
 # ==========================================
 
 @dataclass
@@ -142,8 +141,8 @@ class ProcessingConfig:
     translate_map: Dict[int, Optional[int]] = field(default_factory=dict)
     stopwords: Set[str] = field(default_factory=set)
 
-# ==========================================
-# 🛡️ SECURITY & VALIDATION UTILS
+
+# 🛡️ security, validation utils
 # ==========================================
 
 def get_auth_password() -> str:
@@ -172,8 +171,8 @@ def validate_sketch_data(data: Dict) -> bool:
     if not isinstance(data.get("topic_docs"), list): return False
     return True
 
-# ==========================================
-# 🧠 CORE LOGIC (SCANNER)
+
+# 🧠 core logic, scanner
 # ==========================================
 
 class StreamScanner:
@@ -232,7 +231,7 @@ class StreamScanner:
             logger.error(f"JSON Load Error: {e}")
             return False
 
-# Session State Init
+# session state init
 if 'sketch' not in st.session_state: st.session_state['sketch'] = StreamScanner()
 if 'total_cost' not in st.session_state: st.session_state['total_cost'] = 0.0
 if 'total_tokens' not in st.session_state: st.session_state['total_tokens'] = 0
@@ -263,8 +262,8 @@ def logout():
     st.session_state['authenticated'] = False
     st.session_state['ai_response'] = ""
 
-# ==========================================
-# 🛠️ HELPERS & SETUP
+
+# 🛠️ helpers, setup
 # ==========================================
 
 @st.cache_resource(show_spinner="Init NLTK...")
@@ -329,7 +328,7 @@ def make_unique_header(raw_names: List[Optional[str]]) -> List[str]:
         result.append(unique)
     return result
 
-# --- WEB SCRAPING & VIRTUAL FILES ---
+# --- web scraping, virtual files
 class VirtualFile:
     def __init__(self, name: str, text_content: str):
         self.name = name
@@ -339,7 +338,7 @@ class VirtualFile:
         return self._bytes
     
     def getbuffer(self) -> memoryview:
-        # Added to satisfy the security check relying on .nbytes
+        # added re: security check relying on .nbytes
         return memoryview(self._bytes)
 
 def fetch_url_content(url: str) -> Optional[str]:
@@ -362,9 +361,9 @@ def fetch_url_content(url: str) -> Optional[str]:
         st.toast(f"Error fetching {url}: {str(e)}", icon="⚠️")
         return None
 
-# ==========================================
-# 📄 FILE READERS
-# ==========================================
+
+# 📄 file reading
+# ============================================
 
 def read_rows_raw_lines(file_bytes: bytes, encoding_choice: str = "auto") -> Iterable[str]:
     def _iter(enc):
@@ -538,9 +537,9 @@ def excel_estimate_rows(file_bytes: bytes, sheet_name: str, has_header: bool) ->
     if has_header and total > 0: total -= 1
     return max(total, 0)
 
-# ==========================================
-# ⚙️ PROCESSING LOGIC
-# ==========================================
+
+# ⚙️ processing logic
+# =========================================
 
 def apply_text_cleaning(text: str, config: CleaningConfig) -> str:
     if not isinstance(text, str): 
@@ -665,9 +664,9 @@ def perform_refinery_job(file_obj, chunk_size, clean_conf: CleaningConfig):
             st.error(f"Refinery Error: {str(e)}")
             return None
 
-# ==========================================
-# 📊 ANALYTICS
-# ==========================================
+
+# 📊 analytics
+# ========================================
 
 def render_workflow_guide():
     with st.expander("📘 Comprehensive App Guide: How to use this Tool", expanded=False):
@@ -684,7 +683,7 @@ def render_workflow_guide():
         *   **How:** 
             1. Upload your files in the sidebar.
             2. Review the **"Scan Configuration"** box that appears in the main area (select specific columns for CSVs, etc.).
-            3. Click the **"⚡ Start Scan"** button for each file; RE-Scan if you've adjusted settings (such as stopwords).
+            3. Click the **"⚡ Start Scan"** button for each file; **RE-Scan** if you've adjusted settings (such as stopwords).
         *   **Result:** The app processes the file into a lightweight statistical "Sketch" and generates a "Quick View" Word Cloud. Once all files are scanned, the aggregate analysis appears below.
 
         #### B. The "Deep Scan" (Large Datasets)
@@ -798,7 +797,7 @@ def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words:
     results = []
     epsilon = 1e-10 
     
-    # 1. Safety Check: If no bigrams exist, return empty DataFrame immediately
+    # 1. safety check: if no bigrams exist, return empty DataFrame immediately
     if not bigram_counts:
         return pd.DataFrame(columns=["Bigram", "Count", "NPMI"])
 
@@ -822,7 +821,7 @@ def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words:
         else: npmi = pmi / -log_prob_bigram
         results.append({"Bigram": f"{w1} {w2}", "Count": freq, "NPMI": round(npmi, 3)})
     
-    # 2. Safety Check: If results list is empty, return empty DataFrame with columns
+    # 2. safety check: if results list is empty, return empty DataFrame with columns
     df = pd.DataFrame(results)
     if df.empty:
         return pd.DataFrame(columns=["Bigram", "Count", "NPMI"])
@@ -874,8 +873,8 @@ def perform_bayesian_sentiment_analysis(counts: Counter, sentiments: Dict[str, f
         "x_axis": x, "pdf_y": y
     }
 
-# ==========================================
-# 🎨 VISUALIZATION UTILS
+
+# 🎨 visualization utils
 # ==========================================
 
 @st.cache_data(show_spinner="Analyzing term sentiment...")
@@ -891,7 +890,7 @@ def create_sentiment_color_func(sentiments: Dict[str, float], pos_color, neg_col
         else: return neu_color
     return color_func
 
-# --- RESTORED HELPER FUNCTION ---
+# --- helper fucntion
 def get_sentiment_category(score: float, pos_threshold: float, neg_threshold: float) -> str:
     if score >= pos_threshold: return "Positive"
     if score <= neg_threshold: return "Negative"
@@ -912,8 +911,8 @@ def fig_to_png_bytes(fig: plt.Figure) -> BytesIO:
     buf.seek(0)
     return buf
 
-# ==========================================
-# 🤖 AI LOGIC (Cost Tracking + Chat)
+
+# 🤖 AI logic, cost tracking + chat
 # ==========================================
 
 def call_llm_and_track_cost(system_prompt: str, user_prompt: str, config: dict):
@@ -931,19 +930,19 @@ def call_llm_and_track_cost(system_prompt: str, user_prompt: str, config: dict):
             ]
         )
         
-        # Calculate Cost
+        # calculate cost
         in_tok = 0
         out_tok = 0
         
-        # Standard OpenAI Usage
+        # standard openAI usage (subject to change)
         if hasattr(response, 'usage') and response.usage:
             in_tok = response.usage.prompt_tokens
             out_tok = response.usage.completion_tokens
         
-        # Cost calculation (Price per 1M tokens)
+        # cost calculation (price per 1M tokens)
         cost = (in_tok * config['price_in'] / 1_000_000) + (out_tok * config['price_out'] / 1_000_000)
         
-        # Update Session State
+        # update session state
         st.session_state['total_tokens'] += (in_tok + out_tok)
         st.session_state['total_cost'] += cost
             
@@ -952,18 +951,18 @@ def call_llm_and_track_cost(system_prompt: str, user_prompt: str, config: dict):
     except Exception as e:
         return f"AI Error: {str(e)}"
 
-# ==========================================
-# 🚀 MAIN APP UI
+
+# 🚀 main app UI
 # ==========================================
 
 st.set_page_config(page_title="Intel Engine", layout="wide")
 st.title("🧠 Intel Engine: Unstructured Data Analytics")
 
-render_workflow_guide() # calling the updated guide
-render_use_cases()      # calling the added use-cases
+render_workflow_guide() # calling updated guide
+render_use_cases()      # calling added use-cases
 analyzer = setup_sentiment_analyzer()
 
-# --- SIDEBAR ---
+# -side-bar
 with st.sidebar:
     st.header("📂 Data Input")
     uploaded_files = st.file_uploader("Upload Files", type=["csv", "xlsx", "vtt", "txt", "json", "pdf", "pptx"], accept_multiple_files=True)
@@ -974,7 +973,7 @@ with st.sidebar:
     with st.expander("🌐 Web/Text Import"):
         sketch_upload = st.file_uploader("Import Sketch (.json)", type=["json"])
         
-        # LOGIC FIX: Hash check for Sketch Upload
+        # hash check for sketch upload
         if sketch_upload:
             file_hash = hash(sketch_upload.getvalue())
             if st.session_state.get('last_sketch_hash') != file_hash:
@@ -1117,14 +1116,14 @@ with st.sidebar:
     topic_model_type = st.selectbox("Topic Model", ["LDA", "NMF"], help="LDA is probabilistic (good for long, mixed text). NMF is linear (good for short, distinct text like chats).")
     n_topics = st.slider("Topics", 2, 10, 4, help="The number of distinct themes the algorithm will attempt to find.")
 
-# --- REFINERY UTILITY ---
+# -"refinery" tool/splitter
 with st.expander("🛠️ Data Refinery"):
     ref_file = st.file_uploader("CSV to Refine", type=['csv'])
     if ref_file and st.button("🚀 Run Refinery"):
         zip_data = perform_refinery_job(ref_file, 50000, clean_conf)
         if zip_data: st.download_button("Download ZIP", zip_data, "refined.zip", "application/zip")
 
-# --- SCANNING ---
+# --scanning
 all_inputs = list(uploaded_files) if uploaded_files else []
 if url_input:
     for u in url_input.split('\n'):
@@ -1138,13 +1137,13 @@ if manual_input: all_inputs.append(VirtualFile("manual.txt", manual_input))
 
 if all_inputs:
     st.subheader("🚀 Scanning Phase")
-    # Config gathering loop
+    # config gathering loop
     file_configs = {}
     
     for idx, f in enumerate(all_inputs):
-        # SAFETY: Wrap each file in try/except so one bad file doesn't crash the whole UI
+        # wrapping each file in try/except so one bad file doesn't crash the whole UI (safety)
         try:
-            # SECURITY: RESOURCE LIMIT CHECK
+            # resource limit check
             if f.getbuffer().nbytes > MAX_FILE_SIZE_MB * 1024 * 1024:
                 st.error(f"❌ File **{f.name}** exceeds {MAX_FILE_SIZE_MB}MB limit.")
                 continue
@@ -1156,7 +1155,7 @@ if all_inputs:
             is_json = lower.endswith(".json")
             is_vtt = lower.endswith(".vtt")
             
-            # Default config
+            # default config
             config = {
                 "read_mode": "raw lines", "delimiter": ",", "has_header": False,
                 "sheet_name": None, "json_key": None, "selected_cols": [], "join_with": " "
@@ -1209,7 +1208,7 @@ if all_inputs:
                 status = st.empty()
                 c = file_configs[idx]
                 
-                # Setup Iterator
+                # setup iterator
                 rows_iter = iter([])
                 approx = 0
                 
@@ -1251,7 +1250,7 @@ if all_inputs:
                 
                 bar.progress(100)
                 
-                # UX Feedback for Empty Scans
+                # UX feedback if empty scan
                 if sum(stats.values()) == 0:
                     status.warning("⚠️ Scan finished, but 0 valid tokens were found.")
                     st.markdown("""
@@ -1262,7 +1261,7 @@ if all_inputs:
                 else:
                     status.success(f"Scan Complete! Captured {sum(stats.values()):,} tokens.")
                 
-                # Quick View
+                # quick view
                 if stats:
                     st.markdown("##### 📄 Quick View: This File")
                     color_func = None
@@ -1280,8 +1279,8 @@ if all_inputs:
         except Exception as e:
             st.error(f"❌ Error rendering UI for file **{f.name}**: {str(e)}")
 
-# ----------------------------
-# ANALYSIS PHASE (Reads from Sketch)
+
+# analysis step (reads from 'sketch')
 # ---------------------------
 scanner = st.session_state['sketch']
 combined_counts = scanner.global_counts
@@ -1301,7 +1300,7 @@ if combined_counts:
     
     st.info(f"Analyzing Sketch of {scanner.total_rows_processed:,} total rows.")
     
-    # Sentiment Calculation
+    # sentiment calculation
     term_sentiments = {}
     if enable_sentiment:
         top_keys = [k for k,v in combined_counts.most_common(SENTIMENT_ANALYSIS_TOP_N)]
@@ -1312,7 +1311,7 @@ if combined_counts:
 
     st.subheader("🔍 Bayesian Theme Discovery")
     
-    # LOGIC FIX: Warn about truncated topic models
+    # logic to warn about truncated topic models
     if scanner.limit_reached:
         st.warning(f"⚠️ **Topic Model Limit Reached:** The analysis used the first {MAX_TOPIC_DOCS:,} document samples. Global word counts are accurate, but topics may not reflect the entire dataset.")
 
@@ -1358,12 +1357,12 @@ if combined_counts:
 
     show_graph = proc_conf.compute_bigrams and combined_bigrams and st.checkbox("🕸️ Show Network Graph & Advanced Analytics (uncheck then re-check if graph is blank)", value=True)
     
-    # --- Bayesian Sentiment Inference
+    # --- byesian sentiment inference
 
     if enable_sentiment and beta_dist:
         st.subheader("⚖️ Bayesian Sentiment Inference")
         
-        # <--- INSERT THIS BLOCK --->
+        # helper, bayesian context
         with st.expander("🧠 How to read this chart (and why it matters)", expanded=False):
             st.markdown("""
             **The Problem:** Standard sentiment analysis gives you a single number (e.g., "52% Positive"). But is that 52% based on 5 tweets or 5 million? A single number hides that uncertainty.
@@ -1482,7 +1481,7 @@ if combined_counts:
                 col_s3.metric("Lexical Diversity", f"{text_stats['Lexical Diversity']}")
                 col_s4.metric("Avg Word Len", f"{text_stats['Avg Word Length']}")
             
-            # --- HEATMAP VISUALIZATION ---
+            # --- heatmap
             with tab4:
                 st.caption("Shows how often the Top 20 terms appear next to each other.")
                 top_20 = [w for w, c in combined_counts.most_common(20)]
@@ -1531,7 +1530,7 @@ if combined_counts and st.session_state['authenticated']:
     st.divider()
     st.subheader("🤖 AI Analyst")
     
-    # Context Preparation
+    # context prep
     top_unigrams = [w for w, c in combined_counts.most_common(100)]
     top_bigrams = [" ".join(bg) for bg, c in combined_bigrams.most_common(30)] if proc_conf.compute_bigrams else []
     g_context = locals().get("ai_cluster_info", "(Graph clustering not run)")
@@ -1544,7 +1543,7 @@ if combined_counts and st.session_state['authenticated']:
 
     col_ai_1, col_ai_2 = st.columns(2)
     
-    # 1. Automatic Analysis
+    # 1. automatic analysis
     with col_ai_1:
         st.markdown("**1. One-Click Theme Detection**")
         if st.button("✨ Identify Key Themes", type="primary"):
@@ -1555,7 +1554,7 @@ if combined_counts and st.session_state['authenticated']:
                 st.session_state["ai_response"] = response
                 st.rerun()
 
-    # 2. Free Form Question
+    # 2. free form question/prompt
     with col_ai_2:
         st.markdown("**2. Ask the Data**")
         user_question = st.text_area("Ask a specific question:", height=100, placeholder="e.g., 'What are the main complaints about pricing?'")
