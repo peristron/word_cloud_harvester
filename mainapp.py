@@ -967,7 +967,7 @@ analyzer = setup_sentiment_analyzer()
 with st.sidebar:
     st.header("📂 Data Input")
     uploaded_files = st.file_uploader("Upload Files", type=["csv", "xlsx", "vtt", "txt", "json", "pdf", "pptx"], accept_multiple_files=True)
-    clear_on_scan = st.checkbox("Clear previous data", value=True)
+    clear_on_scan = st.checkbox("Clear previous data", value=False)
     if st.button("🗑️ Reset All"): reset_sketch(); st.rerun()
     
     st.divider()
