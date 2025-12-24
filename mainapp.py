@@ -725,23 +725,30 @@ def render_use_cases():
         ### (Some) use-cases for this unstructured data intelligence engine
         *You'll likely think of more...*
 
+        #### 🏢 Corporate & Strategic
         *   **Customer feedback and support analytics**
         *   **Market and competitive intelligence**
+        *   **Brand Voice Audit:** Ensuring consistency in tone across different locations or channels.
+        *   **Crisis monitoring in real-time**
+        *   **M&A Due Diligence:** Rapidly scanning "Data Rooms" for liabilities (lawsuits, risks) without reading every document.
+        *   **Employee engagement analysis**
+
+        #### 📅 Retrospectives & "Year-in-Review"
+        *   **The "Narrative Arc":** Ingesting a full year of journals, logs, or chats to visualize how themes shifted from Q1 to Q4.
+        *   **Cultural Drift:** Detecting when organizational focus shifted (e.g., from "Innovation" to "Efficiency").
+        *   **Tech Debt Monitoring:** visualizing spikes in terms like "quick fix" or "hack" in commit logs over time.
+
+        #### 🔬 Research & Forensics
         *   **Academic and research applications**
         *   **Internal knowledge mining**
-        *   **Compliance and risk monitoring**
-        *   **Content summarization and curation**
-        *   **Product dev and UX research**
-        *   **Crisis monitoring in real-time**
-        *   **Voice of the Customer (VoC) programs**
-        *   **Employee engagement analysis**
         *   **Legal discovery and e-discovery**
-        *   **Healthcare:** Patient feedback and clinical notes analysis
-        *   **Education:** Course feedback and academic research
-        *   **Security:** Insider threat detection
-        *   **Media and journalism analytics**
-        *   **Automated discovery of "unknown unknowns"** in large, unstructured datasets
-        *   **Trend detection over time** (e.g., how topics or sentiment shift week-to-week)
+        *   **Literary Forensics:** analyzing vocabulary diversity and phrase patterns to detect authorship or ghostwriting.
+        *   **Automated discovery of "unknown unknowns"** in large, unstructured datasets.
+
+        #### 🛡️ Security & Privacy
+        *   **Compliance and risk monitoring**
+        *   **Security:** Insider threat detection.
+        *   **The "Privacy Proxy":** Using the *Refinery* tool to strip PII/Chat logs from raw data before sending it to expensive, insecure cloud AI models.
 
         ---
         #### 🎓 Education: LMS Discussion Forums
