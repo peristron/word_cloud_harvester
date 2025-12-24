@@ -1359,9 +1359,27 @@ if combined_counts:
     show_graph = proc_conf.compute_bigrams and combined_bigrams and st.checkbox("🕸️ Show Network Graph & Advanced Analytics (uncheck then re-check if graph is blank)", value=True)
     
     # --- Bayesian Sentiment Inference
+
     if enable_sentiment and beta_dist:
         st.subheader("⚖️ Bayesian Sentiment Inference")
-        bayes_result = perform_bayesian_sentiment_analysis(combined_counts, term_sentiments, pos_threshold, neg_threshold)
+        
+        # <--- INSERT THIS BLOCK --->
+        with st.expander("🧠 How to read this chart (and why it matters)", expanded=False):
+            st.markdown("""
+            **The Problem:** Standard sentiment analysis gives you a single number (e.g., "52% Positive"). But is that 52% based on 5 tweets or 5 million? A single number hides that uncertainty.
+            
+            **The Solution:** This chart calculates the **Probability** of the true sentiment.
+            *   **The Curve (PDF):** Represents likelihood. The higher the peak, the more likely that specific sentiment score is the "truth."
+            *   **The Shape:** 
+                *   **Narrow & Tall:** We have lots of data. We are highly confident the sentiment is exactly here.
+                *   **Wide & Flat:** We don't have enough data. The true sentiment could be almost anything.
+            *   **The Green Zone (95% CI):** There is a 95% probability the "True" sentiment falls within this range. 
+            
+            **Decision Tip:** If the green zone is very wide (e.g., spanning 30% to 70%), **do not** make business decisions based on sentiment yet; you need more data.
+            """)
+        
+
+        bayes_result = perform_bayesian_sentiment_analysis(combined_counts, term_sentiments, pos_threshold, neg_threshold) 
         if bayes_result:
             b_col1, b_col2 = st.columns([1, 2])
             with b_col1:
