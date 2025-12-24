@@ -684,7 +684,7 @@ def render_workflow_guide():
         *   **How:** 
             1. Upload your files in the sidebar.
             2. Review the **"Scan Configuration"** box that appears in the main area (select specific columns for CSVs, etc.).
-            3. Click the **"⚡ Start Scan"** button for each file.
+            3. Click the **"⚡ Start Scan"** button for each file; RE-Scan if you've adjusted settings (such as stopwords).
         *   **Result:** The app processes the file into a lightweight statistical "Sketch" and generates a "Quick View" Word Cloud. Once all files are scanned, the aggregate analysis appears below.
 
         #### B. The "Deep Scan" (Large Datasets)
