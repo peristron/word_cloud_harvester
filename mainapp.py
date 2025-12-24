@@ -719,7 +719,51 @@ def render_workflow_guide():
         *   **Data Refinery:** If you have a 500MB CSV that Excel refuses to open, use the Refinery. It cleans the text (removing HTML/Chat logs) and splits it into manageable, Excel-ready chunks.
         *   **AI Analyst:** Uses an LLM (Grok/GPT) to read the *summary statistics* and write a qualitative report.
         """)
+def render_use_cases():
+    with st.expander("📖 Use-cases", expanded=False):
+        st.markdown("""
+        ### (Some) use-cases for this unstructured data intelligence engine
+        *You'll likely think of more...*
 
+        *   **Customer feedback and support analytics**
+        *   **Market and competitive intelligence**
+        *   **Academic and research applications**
+        *   **Internal knowledge mining**
+        *   **Compliance and risk monitoring**
+        *   **Content summarization and curation**
+        *   **Product dev and UX research**
+        *   **Crisis monitoring in real-time**
+        *   **Voice of the Customer (VoC) programs**
+        *   **Employee engagement analysis**
+        *   **Legal discovery and e-discovery**
+        *   **Healthcare:** Patient feedback and clinical notes analysis
+        *   **Education:** Course feedback and academic research
+        *   **Security:** Insider threat detection
+        *   **Media and journalism analytics**
+        *   **Automated discovery of "unknown unknowns"** in large, unstructured datasets
+        *   **Trend detection over time** (e.g., how topics or sentiment shift week-to-week)
+
+        ---
+        #### 🎓 Education: LMS Discussion Forums
+        *Insights into what a group of students are discussing:*
+        *   Identifying the most common topics and themes students are talking about.
+        *   Surfacing frequently asked questions and recurring challenges.
+        *   Detecting sentiment trends (e.g., frustration, excitement, confusion) across the class.
+        *   Visualizing connections between concepts or issues using network graphs.
+        *   Highlighting emerging issues or "unknown unknowns" (e.g., a misunderstood assignment).
+        *   Comparing discussion dynamics before and after key events (e.g., exams).
+        *   Summarizing participation patterns (who is most/least active).
+        *   Providing instructors with actionable summaries for targeted intervention.
+
+        ---
+        #### ⚙️ Infrastructure: Middleware for Massive Datasets
+        *Acting as an intelligent "translation layer" for 10M+ rows with cost constraints:*
+        *   **Statistical Sketches:** Processing raw data into compact sketches (counts, distributions) instead of retaining full text.
+        *   **Cost Efficiency:** Massively reducing token usage and API costs by only sending distilled features to LLMs.
+        *   **Privacy:** Enabling scalable analysis where no raw text leaves the secure environment.
+        *   **Hybrid Workflow:** Supporting iterative, human-in-the-loop workflows (explore summaries -> drill down).
+        *   **Pipeline:** Real-time or batch processing for orgs with strict data governance or resource constraints.
+        """)
 def render_analyst_help():
     with st.expander("🎓 Analyst's Guide", expanded=False):
         st.markdown("""
