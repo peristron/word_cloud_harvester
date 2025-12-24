@@ -1356,7 +1356,7 @@ if combined_counts:
     
     text_stats = calculate_text_stats(combined_counts, scanner.total_rows_processed)
 
-    show_graph = proc_conf.compute_bigrams and combined_bigrams and st.checkbox("🕸️ Show Network Graph & Advanced Analytics", value=True)
+    show_graph = proc_conf.compute_bigrams and combined_bigrams and st.checkbox("🕸️ Show Network Graph & Advanced Analytics (uncheck then re-check if graph is blank)", value=True)
     
     # --- Bayesian Sentiment Inference
     if enable_sentiment and beta_dist:
