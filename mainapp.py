@@ -1051,7 +1051,7 @@ with st.sidebar:
     
     st.markdown("### 🧹 Cleaning")
     clean_conf = CleaningConfig(
-        remove_chat=st.checkbox("Remove Chat Artifacts", True),
+        remove_chat=st.checkbox("Remove Chat Artifacts", True, help="Strips metadata like timestamps, usernames (e.g., <@U1234>), and system messages from logs/transcripts to focus purely on the conversation content."),
         remove_html=st.checkbox("Remove HTML", True),
         remove_urls=st.checkbox("Remove URLs", True),
         unescape=st.checkbox("Unescape HTML", True, help="Converts coded entities (e.g., &amp;, &quot;) back into readable symbols (&, \").")
