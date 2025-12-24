@@ -797,6 +797,11 @@ def calculate_text_stats(counts: Counter, total_rows: int) -> Dict:
 def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words: int, min_freq: int = 3) -> pd.DataFrame:
     results = []
     epsilon = 1e-10 
+    
+    # 1. Safety Check: If no bigrams exist, return empty DataFrame immediately
+    if not bigram_counts:
+        return pd.DataFrame(columns=["Bigram", "Count", "NPMI"])
+
     for (w1, w2), freq in bigram_counts.items():
         if freq < min_freq: continue
         count_w1 = unigram_counts.get(w1, 0)
@@ -807,15 +812,22 @@ def calculate_npmi(bigram_counts: Counter, unigram_counts: Counter, total_words:
         prob_w2 = count_w2 / total_words
         prob_bigram = freq / total_words
         
-        try: pmi = math.log(prob_bigram / (prob_w1 * prob_w2))
-        except ValueError: continue
+        try: 
+            pmi = math.log(prob_bigram / (prob_w1 * prob_w2))
+        except ValueError: 
+            continue
 
         log_prob_bigram = math.log(prob_bigram)
         if abs(log_prob_bigram) < epsilon: npmi = 1.0
         else: npmi = pmi / -log_prob_bigram
         results.append({"Bigram": f"{w1} {w2}", "Count": freq, "NPMI": round(npmi, 3)})
     
-    return pd.DataFrame(results).sort_values("NPMI", ascending=False)
+    # 2. Safety Check: If results list is empty, return empty DataFrame with columns
+    df = pd.DataFrame(results)
+    if df.empty:
+        return pd.DataFrame(columns=["Bigram", "Count", "NPMI"])
+        
+    return df.sort_values("NPMI", ascending=False)
 
 def perform_topic_modeling(synthetic_docs: List[Counter], n_topics: int, model_type: str) -> Optional[List[Dict]]:
     if not DictVectorizer or len(synthetic_docs) < 1: return None
