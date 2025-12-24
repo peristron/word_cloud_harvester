@@ -686,7 +686,7 @@ def render_workflow_guide():
 
         #### B. The "Deep Scan" (Large Datasets)
         *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
-        *   **How:** Upload the file, then click the **"⚡ Start Scan"** button that appears. 
+        *   **How:** Upload the file, then click the **"⚡ Start Scan"** button that appears. RE-Scan if changing setting(s) after uploading file(s).
         *   **Mechanism:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts statistics into a lightweight "Sketch," and immediately discards the raw text to save memory.
         *   **Benefit:** This allows you to process datasets larger than your available RAM.
 
