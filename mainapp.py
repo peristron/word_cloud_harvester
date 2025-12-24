@@ -679,20 +679,23 @@ def render_workflow_guide():
 
         ### 🚀 1. Choose Your Workflow
 
-        #### A. The "Quick Analysis" (Small/Medium Files)
-        *   **Best for:** PDFs, PowerPoints, individual Transcripts, or CSVs < 200MB.
-        *   **How:** Simply upload files in the sidebar. 
-        *   **Result:** The app processes them immediately in memory. You get a "Quick View" Word Cloud for each file as it loads, followed by a master analysis of all files combined.
+        #### A. The "Direct Scan" (Standard)
+        *   **Best for:** PDFs, PowerPoints, Transcripts, or CSVs/JSON files.
+        *   **How:** 
+            1. Upload your files in the sidebar.
+            2. Review the **"Scan Configuration"** box that appears in the main area (select specific columns for CSVs, etc.).
+            3. Click the **"⚡ Start Scan"** button for each file.
+        *   **Result:** The app processes the file into a lightweight statistical "Sketch" and generates a "Quick View" Word Cloud. Once all files are scanned, the aggregate analysis appears below.
 
         #### B. The "Deep Scan" (Large Datasets)
-        *   **Best for:** Large CSVs (200MB - 1GB) or massive text dumps.
-        *   **How:** Upload the file, then click the **"⚡ Start Scan"** button that appears. RE-Scan if changing setting(s) after uploading file(s).
-        *   **Mechanism:** The app switches to **Streaming Mode**. It reads the file in small chunks, extracts statistics into a lightweight "Sketch," and immediately discards the raw text to save memory.
+        *   **Best for:** Massive text dumps (>200MB) where memory is a concern.
+        *   **How:** Same as above, but the engine uses **Streaming Mode**.
+        *   **Mechanism:** It reads the file in small chunks, extracts statistics, and immediately discards the raw text to save memory.
         *   **Benefit:** This allows you to process datasets larger than your available RAM.
 
         #### C. The "Enterprise" Workflow (Offline/Secure)
         *   **Best for:** Massive datasets (10M+ rows) or sensitive data (PII) that cannot leave your secure server.
-        *   **How:** Use the **Harvester Script** (found in the "Enterprise" expander below) to process data locally. It generates a `.json` Sketch file containing only math/counts (no raw text). Upload that JSON here to visualize it.
+        *   **How:** Use the **Harvester Script** (running locally) to generate a `.json` Sketch file containing only math/counts (no raw text). Upload that JSON here to visualize it.
 
         ---
 
@@ -716,7 +719,7 @@ def render_workflow_guide():
         ---
 
         ### ⚡ 3. Utilities
-        *   **Data Refinery:** If you have a 500MB CSV that Excel refuses to open, use the Refinery. It cleans the text (removing HTML/Chat logs) and splits it into manageable, Excel-ready chunks.
+        *   **Data Refinery:** If you have a ~500MB to 1GB CSV that Excel refuses to open, use the Refinery. It cleans the text (removing HTML/Chat logs) and splits it into manageable, Excel-ready chunks.
         *   **AI Analyst:** Uses an LLM (Grok/GPT) to read the *summary statistics* and write a qualitative report.
         """)
 def render_use_cases():
