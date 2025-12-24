@@ -108,6 +108,25 @@ For data that is too large to upload or too sensitive to leave your secure serve
 - media and journalism analytics
 - automated discovery of "unknown unknowns" in large, unstructured datasets
 - trend detection over time (e.g., how topics or sentiment shift week-to-week)
+- (...    or, say, insights into what a group of students are discussing in a discussions forum within an LMS
+
+        identifying the most common topics and themes students are talking about
+
+        surfacing frequently asked questions, recurring challenges
+
+        detecting sentiment trends (e.g., frustration, excitement, confusion) across the class or over time
+
+        visualizing connections between concepts or issues using network graphs
+
+        highlighting emerging issues or “unknown unknowns” (e.g., a misunderstood assignment or technical problem)
+
+        comparing some discussion dynamics before and after key events (e.g., exams, assignment deadlines)
+
+        summarizing participation patterns (who is most/least active, what topics generate the most engagement)
+
+        providing instructors with actionable summaries and qualitative insights for targeted intervention or feedback or crafting better intelligent agents' messaging
+
+  etc...)
 
 
 ---
