@@ -86,5 +86,32 @@ For data that is too large to upload or too sensitive to leave your secure serve
 *   `nltk` (for Sentiment)
 *   `openai` (Optional, for AI summaries)
 
+---
+
+## 📖 Use-cases
+(Some)use-cases for this unstructured data intelligence engine; you'll likely think of more
+
+- customer feedback and support analytics
+- market and competitive intelligence
+- academic and research applications
+- internal knowledge mining
+- compliance and risk monitoring
+- content summarization and curation
+- product dev and ux research
+- crisis monitoring in real-time
+- voice of the customer (voc) programs
+- employee engagement analysis
+- legal discovery and e-discovery
+- healthcare: patient feedback and clinical notes analysis
+- education: course feedback and academic research
+- security: insider threat detection
+- media and journalism analytics
+- automated discovery of "unknown unknowns" in large, unstructured datasets
+- trend detection over time (e.g., how topics or sentiment shift week-to-week)
+
+
+---
+
+
 ## 📄 License
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
